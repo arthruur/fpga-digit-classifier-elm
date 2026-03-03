@@ -1,24 +1,55 @@
-# FPGA Digit Classifier (ELM)
+# Classificador de Dígitos (ELM) - FPGA Accelerators
 
-## Descrição do Projeto
-[cite_start]Este projeto implementa um sistema classificador de dígitos numéricos embarcado em uma arquitetura SoC (System-on-Chip) heterogênea, composta por um processador ARM e um acelerador de hardware em FPGA[cite: 24]. [cite_start]O sistema utiliza uma rede neural do tipo *Extreme Learning Machine* (ELM) para realizar a inferência de imagens MNIST[cite: 33, 49].
+## 1. Levantamento de Requisitos
+Esta seção descreve os objetivos do projeto, que consiste na construção de um classificador de dígitos numéricos (MNIST) para operar em um sistema heterogêneo (SoC ARM + FPGA).
 
-[cite_start]O desenvolvimento abrange desde a arquitetura de hardware de baixo nível até a camada de aplicação, incluindo um driver de dispositivo customizado para o sistema operacional Linux[cite: 95, 111].
+* **Objetivo Geral:** Implementar inferência ELM (Extreme Learning Machine) em hardware.
+* **Requisitos Funcionais:**
+    * Implementar Datapath MAC, FSM de controle, ativação aproximada e Argmax em Verilog (Marco 1).
+    * Desenvolver driver em Assembly ARM para controle via MMIO.
+    * Desenvolver aplicação C para leitura de imagens, benchmarking e validação.
+* **Restrições:** Uso de aritmética de ponto fixo (Q4.12) e integração com interface HPS da DE1-SoC.
 
-## Arquitetura e Tech Stack
-[cite_start]O sistema foi desenvolvido para a plataforma **DE1-SoC** [cite: 20] e utiliza:
-* [cite_start]**Hardware (FPGA/RTL):** Verilog, FSM de controle, datapath MAC (Multiplica-Acumula) e aritmética de ponto fixo Q4.12[cite: 84, 88, 93].
-* [cite_start]**Comunicação:** Interface via MMIO (*Memory-Mapped I/O*) para controle e troca de dados entre o HPS (ARM) e o acelerador[cite: 41, 109].
-* [cite_start]**Driver:** Implementação em Assembly ARM/C para interface kernel/userspace[cite: 97, 108].
-* [cite_start]**Aplicação:** Aplicação CLI em C para validação, métricas de performance (latência, throughput) e *benchmarking*[cite: 111, 116].
 
-## Estrutura do Repositório
-```text
-/
-├── README.md           # Essencial: levantamento de requisitos, instruções de instalação [cite: 150, 173]
-├── docs/               # Relatórios, manuais e baremas
-├── rtl/                # Código Verilog do IP elm_accel e FSM [cite: 140]
-├── sim/                # Testbenches e scripts de automação [cite: 147]
-├── driver/             # Código Assembly ARM do Driver Linux [cite: 105, 166]
-├── app/                # Código da aplicação em C [cite: 111, 183]
-└── scripts/            # Scripts para compilação (Makefile) e testes
+
+## 2. Detalhamento de Softwares
+Abaixo estão as ferramentas e versões utilizadas para o desenvolvimento e validação do sistema.
+
+| Categoria | Software | Versão | Função |
+| :--- | :--- | :--- | :--- |
+| EDA Tool | Quartus Prime | [Insira aqui] | [cite_start]Síntese e implementação do RTL [cite: 165] |
+| Simulação | ModelSim/Questa | [Insira aqui] | [cite_start]Testbench e validação RTL [cite: 141] |
+| Compilador | GCC (ARM cross-compiler) | [Insira aqui] | Compilação do Driver e App C |
+| Controle de Versão | Git | [Insira aqui] | [cite_start]Versionamento e documentação [cite: 142] |
+
+## 3. Especificação de Hardware
+[cite_start]O projeto foi desenvolvido para a plataforma de desenvolvimento educacional, garantindo que o hardware atenda aos requisitos de conectividade entre HPS e FPGA[cite: 20].
+
+* **Dispositivo:** DE1-SoC (Cyclone V SE).
+* [cite_start]**Interface de Comunicação:** HPS (ARM) para FPGA via Barramento (Bridges)[cite: 165].
+* [cite_start]**Recursos Utilizados:** Detalhamento de LUTs, FFs, DSPs e BRAMs conforme relatório de síntese do Quartus[cite: 144].
+
+## 4. Instalação e Configuração do Ambiente
+Processo detalhado para replicar o ambiente de desenvolvimento:
+
+1. **Dependências:** [Liste bibliotecas ou ferramentas de sistema necessárias].
+2. [cite_start]**Configuração de Hardware:** [Descreva jumpers ou conexões físicas necessárias na DE1-SoC][cite: 156].
+3. **Compilação:**
+   * Para o RTL: `make rtl_build` (ou comando equivalente).
+   * [cite_start]Para o Driver: `make driver_build`[cite: 105].
+   * Para a Aplicação C: `make app_build`.
+
+## 5. Testes de Funcionamento e Automação
+[cite_start]Descrição dos procedimentos de validação para garantir a integridade do IP[cite: 157].
+
+* [cite_start]**Testbench (Simulação RTL):** Scripts automáticos comparando os resultados do hardware com o "golden model" (referência)[cite: 141].
+* [cite_start]**Automação:** Foram criados scripts em [Bash/Python] localizados na pasta `/scripts` para rodar o conjunto de K vetores de teste[cite: 147].
+* [cite_start]**Teste de Estabilidade:** Execução de uma imagem conhecida repetidas vezes para validar a consistência do driver e do IP[cite: 107, 168].
+
+
+
+## 6. Análise de Resultados
+[cite_start]Esta seção será preenchida com a análise crítica dos resultados obtidos, incluindo[cite: 158]:
+* **Acurácia:** Comparação do modelo ELM implementado versus modelo teórico.
+* [cite_start]**Desempenho:** Latência média, desvio padrão e throughput (imagens/s) obtidos no benchmarking [cite: 116-120].
+* **Gargalos:** Identificação de limitações na arquitetura e possíveis melhorias.
