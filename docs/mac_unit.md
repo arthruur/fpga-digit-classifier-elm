@@ -17,6 +17,20 @@ Para otimização de hardware na FPGA (Cyclone V), a unidade opera estritamente 
 * **Bits \[11:0\]:** Parte fracionária (12 bits).  
 * **Intervalo de representação:** de \-8.0 (16'h8000) a \+7.999... (16'h7FFF).
 
+### 1.1. Fundamentos Teóricos: Formato Q4.12 e Complemento de 2
+
+Para compreender o funcionamento da unidade, é essencial entender a matemática subjacente a este formato:
+
+**O que é o Complemento de 2?**
+O Complemento de 2 é o padrão utilizado pelas arquiteturas computacionais para representar números negativos em binário. Neste formato, o bit mais à esquerda (bit mais significativo) atua como o bit de sinal: se for 0, o número é positivo; se for 1, o número é negativo. A grande vantagem desta abordagem em hardware é permitir que o mesmo circuito somador processe tanto somas como subtrações sem distinção matemática, otimizando drasticamente a utilização de portas lógicas e recursos na FPGA.
+
+**Porquê o intervalo de -8.0 a +7.999...?**
+Este limite é uma consequência matemática direta da representação em Complemento de 2 alocada numa estrutura de 16 bits dividida no formato Q4.12 (4 bits para a parte inteira com sinal e 12 bits para a parte fracionária):
+
+- **Limite Positivo Máximo (+7.999...):** Obtém-se quando o bit de sinal é 0 e todos os restantes bits são 1 (16'h7FFF). Os 3 bits da parte inteira (111) equivalem a 7, e os 12 bits fracionários (111...1) equivalem a quase 1 (0.999755...), totalizando o teto positivo de +7.999...
+
+- **Limite Negativo Máximo (-8.0):** Em Complemento de 2, a representação do número zero consome uma das combinações lógicas do lado positivo. Isto permite "descer" uma unidade extra no lado negativo. O menor número possível é alcançado definindo o bit de sinal a 1 e todos os restantes a 0 (16'h8000). Os 4 bits inteiros (1000) são lidos diretamente como -8, e a parte fracionária é 0, resultando num valor matemático exato de -8.0.
+
 ## **2\. Arquitetura e Lógica do Circuito (Datapath)**
 
 O circuito foi projetado dividindo-se claramente a lógica combinacional (cálculos matemáticos) da lógica sequencial (armazenamento e controle temporal).
