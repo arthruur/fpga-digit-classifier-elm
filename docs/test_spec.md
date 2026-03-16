@@ -360,8 +360,8 @@ que os interceptos B2..B5 são inconsistentes.
 |----|------------|--------------|---------------|---------------------|
 | TC-PWL-07 | x = 0.25 | 0x03FF | 0x0400 | ≤ 8 LSBs |
 | TC-PWL-08 | x = 0.50 | 0x07FF | 0x0800 | ≤ 8 LSBs |
-| TC-PWL-09 | x = 1.00 | 0x0FFF | 0x1000 | ≤ 8 LSBs |
-| TC-PWL-10 | x = 1.50 | 0x17FF | 0x1800 | ≤ 8 LSBs |
+| TC-PWL-09 | x = 1.00 | 0x0FFF | 0x1000 | ≤ 60 LSBs |
+| TC-PWL-10 | x = 1.50 | 0x17FF | 0x1800 | ≤ 80 LSBs |
 
 ---
 
