@@ -6,14 +6,26 @@
 // Como executar (Icarus Verilog):
 //   iverilog -o tb_rom_pesos tb_rom_pesos.v rom_pesos.v && vvp tb_rom_pesos
 //
-// IMPORTANTE sobre os valores esperados:
-//   Como os pesos reais ainda não foram fornecidos, a rom_pesos está
-//   inicializada com o padrão sintético: mem[addr] = addr[15:0].
-//   Portanto: valor esperado em qualquer posição = addr[15:0].
+// REQUISITO: w_in.hex deve estar no mesmo diretório que os arquivos .v
 //
-//   Quando o arquivo w_in.mif for fornecido pelo professor:
-//   1. Substitua a inicialização sintética na rom_pesos.v
-//   2. Atualize as constantes W_IN_* abaixo com os valores reais do MIF
+// ─── ESQUEMA DE ENDEREÇAMENTO (PADDED) ─────────────────────────────────────
+//   addr = {neuron_idx[6:0], pixel_idx[9:0]}
+//   addr = neuron_idx * 1024 + pixel_idx
+//
+//   Profundidade da ROM: 2^17 = 131.072 (padded)
+//   Posições n*1024 + 784 a n*1024 + 1023: padding (zero, não usadas pela FSM)
+//
+//   Endereços de teste:
+//     W[0][0]     → {7'd0,   10'd0}   = 17'd0      = 0
+//     W[0][783]   → {7'd0,   10'd783} = 17'd783     = 783
+//     W[127][0]   → {7'd127, 10'd0}   = 17'd130048  = 127*1024
+//     W[127][783] → {7'd127, 10'd783} = 17'd130831  = 127*1024 + 783
+//
+// ─── VALORES ESPERADOS (pesos reais Q4.12) ──────────────────────────────────
+//   W[0][0]     = w[0]       = -136  → 0xFF78
+//   W[0][783]   = w[783]     = 5670  → 0x1626
+//   W[127][0]   = w[99568]   = -466  → 0xFE2E
+//   W[127][783] = w[100351]  = -4225 → 0xEF7F
 // =============================================================================
 
 `timescale 1ns/1ps
@@ -34,24 +46,18 @@ module tb_rom_pesos;
     integer fail_count;
 
     // -------------------------------------------------------------------------
-    // Valores esperados para cada posição de teste
+    // Valores esperados — pesos reais em Q4.12 (fonte: W_in_q.txt)
     //
-    // Com o padrão sintético: valor esperado = addr[15:0]
-    //
-    // Cálculo dos endereços compostos:
-    //   addr = {neuron_idx[6:0], pixel_idx[9:0]}
-    //
-    //   W[0][0]   → {7'd0,   10'd0}   = 17'd0      → valor = 16'd0
-    //   W[0][783] → {7'd0,   10'd783} = 17'd783     → valor = 16'd783
-    //   W[127][0] → {7'd127, 10'd0}   = 17'd100352-784 = 17'd99840 → valor = 99840 & 0xFFFF = 16'd99840 % 65536
-    //   W[127][783]→ {7'd127,10'd783} = 17'd100351  → valor = 100351 & 0xFFFF = 16'd34815
-    //
-    // Substitua estes valores quando os pesos reais forem fornecidos:
+    // Endereços com layout padded (neuron * 1024 + pixel):
+    //   W[0][0]     = w_linear[0*784+0]   = -136  → 0xFF78
+    //   W[0][783]   = w_linear[0*784+783] = 5670  → 0x1626
+    //   W[127][0]   = w_linear[127*784+0] = -466  → 0xFE2E
+    //   W[127][783] = w_linear[127*784+783]= -4225 → 0xEF7F
     // -------------------------------------------------------------------------
-    localparam W_IN_0_0     = 16'd0;        // addr = 17'd0
-    localparam W_IN_0_783   = 16'd783;      // addr = 17'd783
-    localparam W_IN_127_0   = 16'd34816;    // addr = 17'd99840  → 99840 mod 65536 = 34304... ver nota
-    localparam W_IN_127_783 = 16'd34815;    // addr = 17'd100351 → 100351 mod 65536 = 34815
+    localparam W_IN_0_0     = 16'hFF78;   // W[0][0]     addr=0
+    localparam W_IN_0_783   = 16'h1626;   // W[0][783]   addr=783
+    localparam W_IN_127_0   = 16'hFE2E;   // W[127][0]   addr=130048
+    localparam W_IN_127_783 = 16'hEF7F;   // W[127][783] addr=130831
 
     // -------------------------------------------------------------------------
     // Instância do DUT
@@ -69,7 +75,7 @@ module tb_rom_pesos;
     always #5 clk = ~clk;
 
     // -------------------------------------------------------------------------
-    // Task auxiliar: verifica resultado e imprime PASS ou FAIL
+    // Task auxiliar
     // -------------------------------------------------------------------------
     task check;
         input [63:0]  tc_num;
@@ -98,32 +104,33 @@ module tb_rom_pesos;
 
         $display("=============================================================");
         $display(" tb_rom_pesos — Iniciando testes (TC-WGT-01 a TC-WGT-06)");
+        $display(" Pesos reais Q4.12 | ROM padded 2^17 = 131072 entradas");
+        $display(" Endereçamento: addr = {neuron[6:0], pixel[9:0]}");
         $display("=============================================================");
 
         // ---------------------------------------------------------------------
-        // TC-WGT-01 — Leitura do peso W[0][0] (neurônio 0, pixel 0)
+        // TC-WGT-01 — Leitura do peso W[0][0]
         //
+        // W[0][0] = -136 → 0xFF78
         // Endereço: {7'd0, 10'd0} = 17'd0
-        // É o teste de sanidade fundamental da ROM — verifica que a
-        // inicialização funcionou e que o endereço base retorna valor correto.
         // ---------------------------------------------------------------------
-        $display("\n-- TC-WGT-01: leitura W[0][0] --");
+        $display("\n-- TC-WGT-01: leitura W[0][0] (esperado 0xFF78 = -136) --");
         @(posedge clk); #1;
-        addr = {7'd0, 10'd0};       // endereço composto: neurônio 0, pixel 0
+        addr = {7'd0, 10'd0};
 
-        @(posedge clk); #1;         // aguarda 1 ciclo de latência
+        @(posedge clk); #1;
         check(1, data_out, W_IN_0_0);
 
         // ---------------------------------------------------------------------
         // TC-WGT-02 — Leitura do peso W[0][783] (neurônio 0, último pixel)
         //
-        // Verifica que pixel_idx[9:0] chega corretamente até 783.
-        // Um addr de 16 bits em vez de 17 cortaria o bit mais alto de
-        // pixel_idx e este endereço seria mapeado incorretamente.
+        // W[0][783] = 5670 → 0x1626
+        // Endereço: {7'd0, 10'd783} = 17'd783
+        // Verifica que pixel_idx[9:0] cobre corretamente até 783.
         // ---------------------------------------------------------------------
-        $display("\n-- TC-WGT-02: leitura W[0][783] --");
+        $display("\n-- TC-WGT-02: leitura W[0][783] (esperado 0x1626 = 5670) --");
         @(posedge clk); #1;
-        addr = {7'd0, 10'd783};     // neurônio 0, último pixel
+        addr = {7'd0, 10'd783};
 
         @(posedge clk); #1;
         check(2, data_out, W_IN_0_783);
@@ -131,56 +138,53 @@ module tb_rom_pesos;
         // ---------------------------------------------------------------------
         // TC-WGT-03 — Leitura do peso W[127][0] (último neurônio, pixel 0)
         //
-        // Verifica que neuron_idx[6:0] funciona corretamente nos bits altos
-        // do endereço. Erro aqui faria todos os neurônios ler pesos do
-        // neurônio 0.
+        // W[127][0] = -466 → 0xFE2E
+        // Endereço padded: {7'd127, 10'd0} = 17'd130048
+        //
+        // NOTA HISTÓRICA — este era o bug do testbench original:
+        //   A ROM tinha profundidade 100352, mas {7'd127, 10'd0} = 130048 > 100351
+        //   → acesso out-of-bounds → data_out = 'x na simulação.
+        //   Corrigido com profundidade padded = 131072. ✓
         // ---------------------------------------------------------------------
-        $display("\n-- TC-WGT-03: leitura W[127][0] --");
+        $display("\n-- TC-WGT-03: leitura W[127][0] (esperado 0xFE2E = -466) --");
         @(posedge clk); #1;
-        addr = {7'd127, 10'd0};     // último neurônio, pixel 0
+        addr = {7'd127, 10'd0};
 
         @(posedge clk); #1;
         check(3, data_out, W_IN_127_0);
 
         // ---------------------------------------------------------------------
-        // TC-WGT-04 — Leitura do peso W[127][783] (endereço máximo)
+        // TC-WGT-04 — Leitura do peso W[127][783] (endereço máximo real)
         //
-        // addr máximo = {7'd127, 10'd783} = 17'd100351
-        // Verifica que a ROM tem profundidade suficiente e que não há
-        // overflow de endereçamento na posição final.
+        // W[127][783] = -4225 → 0xEF7F
+        // Endereço padded: {7'd127, 10'd783} = 17'd130831
+        // Verifica que a ROM tem profundidade suficiente.
         // ---------------------------------------------------------------------
-        $display("\n-- TC-WGT-04: leitura W[127][783] (addr maximo) --");
+        $display("\n-- TC-WGT-04: leitura W[127][783] (esperado 0xEF7F = -4225) --");
         @(posedge clk); #1;
-        addr = {7'd127, 10'd783};   // posição máxima da ROM
+        addr = {7'd127, 10'd783};
 
         @(posedge clk); #1;
         check(4, data_out, W_IN_127_783);
 
         // ---------------------------------------------------------------------
-        // TC-WGT-05 — Latência de leitura: exatamente 1 ciclo de clock
+        // TC-WGT-05 — Latência de leitura: exatamente 1 ciclo
         //
-        // Verifica explicitamente que a ROM é síncrona: apresentar o endereço
-        // no ciclo N entrega o dado no ciclo N+1, não no mesmo ciclo.
-        // A FSM precisa respeitar essa latência ao ler pesos consecutivos.
+        // Apresenta endereço no ciclo N, verifica no ciclo N+1.
         // ---------------------------------------------------------------------
         $display("\n-- TC-WGT-05: latencia de leitura = 1 ciclo --");
         @(posedge clk); #1;
-        addr = {7'd0, 10'd0};       // apresenta endereço no ciclo N
+        addr = {7'd0, 10'd0};   // apresenta no ciclo N
 
-        // Ciclo N+1: dado ainda não deve ser verificado aqui
-        // (apenas avança o clock sem checar)
-        @(posedge clk); #1;
-
-        // Ciclo N+2: agora verifica — mesmo endereço, dado estável
-        // Nota: avançamos 1 ciclo extra para garantir estabilidade
+        @(posedge clk); #1;     // ciclo N+1: dado disponível
         check(5, data_out, W_IN_0_0);
 
         // ---------------------------------------------------------------------
         // TC-WGT-06 — Dois endereços consecutivos retornam valores distintos
         //
-        // Verifica que leituras consecutivas não retornam o mesmo valor
-        // por inércia de registrador. W[0][0] e W[1][0] devem ser diferentes
-        // (garantido pelo padrão sintético: addr0=0, addr1=784).
+        // W[0][0] = -136 (0xFF78)   addr=0
+        // W[1][0] = ?               addr=1024 (= {7'd1, 10'd0})
+        // Com pesos reais, praticamente garantido que W[0][0] ≠ W[1][0].
         // ---------------------------------------------------------------------
         $display("\n-- TC-WGT-06: enderecos consecutivos retornam valores distintos --");
 
@@ -188,18 +192,17 @@ module tb_rom_pesos;
         @(posedge clk); #1;
         addr = {7'd0, 10'd0};
         @(posedge clk); #1;
-        // data_out agora tem W[0][0] = 0x0000
+        // data_out = W[0][0]
 
-        // Lê W[1][0] — endereço = {7'd1, 10'd0} = 17'd784
+        // Lê W[1][0]
         @(posedge clk); #1;
         addr = {7'd1, 10'd0};
         @(posedge clk); #1;
-        // data_out agora tem W[1][0] = 16'd784 = 0x0310
+        // data_out = W[1][0]
 
-        // Verifica que W[1][0] é diferente de W[0][0]
-        // Com padrão sintético: W[0][0]=0x0000, W[1][0]=0x0310 → distintos
         if (data_out !== W_IN_0_0) begin
-            $display("  PASS  TC-WGT-06 | W[0][0] != W[1][0]: valores distintos confirmados");
+            $display("  PASS  TC-WGT-06 | W[0][0] != W[1][0] (0x%04X vs 0x%04X): valores distintos",
+                     W_IN_0_0, data_out);
             pass_count = pass_count + 1;
         end else begin
             $display("  FAIL  TC-WGT-06 | W[0][0] == W[1][0]: registrador travado?  <---");

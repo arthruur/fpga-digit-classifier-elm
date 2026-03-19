@@ -7,12 +7,23 @@
 // Endereço composto (17 bits):
 //   addr = {neuron_idx[6:0], pixel_idx[9:0]}
 //
-// Referência: test_spec_memories.md — Módulo 2 (TC-WGT-01 a TC-WGT-06)
+//   Cálculo: addr = neuron_idx * 1024 + pixel_idx
 //
-// NOTA SOBRE O ARQUIVO MIF:
-//   Quando o professor fornecer os pesos treinados, gere o arquivo w_in.mif
-//   com o script gen_mif.py e substitua a inicialização sintética abaixo
-//   pelo comando: $readmemh("w_in.mif", mem);
+//   ATENÇÃO — layout padded:
+//     A ROM tem profundidade 2^17 = 131.072 entradas.
+//     Para cada neurônio n, as posições n*1024+784 a n*1024+1023 ficam
+//     sem uso (zero). Isso torna o endereçamento uma simples concatenação
+//     de bits, evitando multiplicador na FSM.
+//
+//     Comparação de profundidade:
+//       Linear  (n*784+p): 100.352 entradas — menor, mas exige multiplicador
+//       Padded  (n*1024+p):131.072 entradas — maior, mas endereço = concat ✓
+//
+// Arquivo de inicialização: w_in.hex
+//   Formato: $readmemh — um valor hex por linha, sem cabeçalho.
+//   Gerado por: scripts/gen_hex.py a partir de W_in_q.txt
+//
+// Referência: test_spec_memories.md — Módulo 2 (TC-WGT-01 a TC-WGT-06)
 // =============================================================================
 
 module rom_pesos (
@@ -22,48 +33,42 @@ module rom_pesos (
 );
 
     // -------------------------------------------------------------------------
-    // Declaração da memória
+    // Declaração da memória — profundidade PADDED = 2^17 = 131.072
     //
-    // [15:0]      → cada posição guarda 16 bits (peso em formato Q4.12)
-    // [100351:0]  → 100.352 posições = 128 neurônios × 784 pixels
+    // Por que 131.072 e não 100.352?
+    //   Com addr = {7 bits, 10 bits}, o valor máximo de addr é:
+    //     {7'd127, 10'd783} = 127*1024 + 783 = 130.831
+    //   100.352 entradas seriam insuficientes (130.831 > 100.351 → out-of-bounds).
     //
-    // O Quartus infere isso como BRAM automaticamente — o mesmo padrão
-    // da ram_img, só que muito maior e sem lógica de escrita.
+    //   Usando 2^17 = 131.072, todos os endereços válidos são cobertos.
+    //   O custo extra: (131.072 - 100.352) × 16 bits ≈ 26 Kbytes desperdiçados.
     // -------------------------------------------------------------------------
-    reg [15:0] mem [100351:0];
+    reg [15:0] mem [131071:0];
 
     // -------------------------------------------------------------------------
-    // Inicialização com padrão sintético
+    // Inicialização com os pesos reais (Q4.12)
     //
-    // Como os pesos reais ainda não foram fornecidos pelo professor,
-    // inicializamos com um padrão matemático verificável:
+    // w_in.hex é um arquivo de texto com uma linha por posição:
+    //   linha 0       → W[0][0]   (neurônio 0, pixel 0)
+    //   linha 783     → W[0][783] (neurônio 0, pixel 783)
+    //   linhas 784–1023 → zeros (posições de padding)
+    //   linha 1024    → W[1][0]   (neurônio 1, pixel 0)
+    //   ...
+    //   linha 130.048 → W[127][0]
+    //   linha 130.831 → W[127][783]
     //
-    //   mem[addr] = addr[15:0]  (valor = índice truncado para 16 bits)
-    //
-    // Isso permite ao testbench calcular o valor esperado de qualquer
-    // posição sem precisar do arquivo MIF.
-    //
-    // Quando os pesos reais chegarem, substitua este bloco por:
-    //   initial $readmemh("w_in.mif", mem);
+    // O $readmemh preenche apenas as linhas presentes no arquivo.
+    // Posições não preenchidas ficam como 16'bx em simulação —
+    // o arquivo w_in.hex já inclui zeros nas posições de padding.
     // -------------------------------------------------------------------------
-    integer i;
-    initial begin
-        for (i = 0; i < 100352; i = i + 1)
-            mem[i] = i[15:0];
-    end
+    initial $readmemh("w_in.hex", mem);
 
     // -------------------------------------------------------------------------
     // Lógica de leitura — bloco síncrono
     //
-    // Idêntica à ram_img: a cada borda de subida do clock, o valor em
-    // mem[addr] é capturado em data_out.
-    //
     // Latência: 1 ciclo de clock.
     // Ciclo N:   apresenta addr
     // Ciclo N+1: data_out tem o valor de mem[addr]
-    //
-    // Não há lógica de escrita — ROM não tem we.
-    // O conteúdo é definido apenas pela inicialização acima.
     // -------------------------------------------------------------------------
     always @(posedge clk) begin
         data_out <= mem[addr];
