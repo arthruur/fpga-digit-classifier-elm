@@ -69,9 +69,6 @@ module fsm_ctrl (
 
     // =========================================================================
     // Declaração dos estados
-    //
-    // "localparam" define constantes locais ao módulo — como #define em C.
-    // Usamos 3 bits para representar 7 estados (2³ = 8 possibilidades).
     // =========================================================================
     localparam IDLE        = 3'd0;
     localparam LOAD_IMG    = 3'd1;
@@ -99,26 +96,11 @@ module fsm_ctrl (
 
     // =========================================================================
     // BLOCO 1 — Sequencial
-    // Atualiza current_state e contadores a cada borda de clock.
-    //
-    // Este bloco tem DUAS responsabilidades:
-    //   1. Transicionar de current_state para next_state
-    //   2. Incrementar/zerar os contadores i, j, k conforme o estado
-    //
-    // Por que os contadores ficam aqui e não no bloco combinacional?
-    // Contadores são registradores — precisam do clock para mudar.
-    // O bloco combinacional (always @*) não pode ter registradores.
+    // Atualiza current_state, contadores e saídas registradas a cada borda.
     // =========================================================================
     always @(posedge clk or negedge rst_n) begin
 
         if (!rst_n || reset) begin
-            // -----------------------------------------------------------------
-            // Reset: volta ao estado inicial e zera tudo
-            //
-            // "reset" vem do reg_bank (CTRL[1]) — permite abort via software.
-            // "!rst_n" é o reset de hardware da placa.
-            // Ambos produzem o mesmo efeito: IDLE + contadores zerados.
-            // -----------------------------------------------------------------
             current_state <= IDLE;
             i             <= 0;
             j             <= 0;
@@ -128,29 +110,11 @@ module fsm_ctrl (
             done_out      <= 0;
 
         end else begin
-            // -----------------------------------------------------------------
-            // Atualiza estado
-            // -----------------------------------------------------------------
             current_state <= next_state;
 
-            // -----------------------------------------------------------------
-            // Atualiza contadores por estado
-            //
-            // Os contadores controlam ONDE estamos dentro de cada loop.
-            // A lógica é:
-            //   j incrementa a cada ciclo dentro de um estado
-            //   quando j chega no máximo → zera j, incrementa i ou k
-            //   quando i ou k chegam no máximo → FSM transiciona
-            // -----------------------------------------------------------------
             case (current_state)
 
                 LOAD_IMG: begin
-                    // ---------------------------------------------------------
-                    // Conta 784 pixels (j = 0..783)
-                    // A cada ciclo um pixel é gravado na ram_img.
-                    // Quando j=783: último pixel gravado, próximo ciclo
-                    // a FSM vai para CALC_HIDDEN e j é zerado.
-                    // ---------------------------------------------------------
                     if (j < 783)
                         j <= j + 1;
                     else
@@ -158,16 +122,6 @@ module fsm_ctrl (
                 end
 
                 CALC_HIDDEN: begin
-                    // ---------------------------------------------------------
-                    // Loop duplo: i (neurônios) × j (pixels)
-                    //
-                    // j incrementa a cada ciclo (loop interno).
-                    // Quando j=783 (fim de um neurônio):
-                    //   → zera j para o próximo neurônio
-                    //   → incrementa i
-                    // Quando i=127 e j=783 (último neurônio):
-                    //   → zera ambos, FSM vai para CALC_OUTPUT
-                    // ---------------------------------------------------------
                     if (j < 783) begin
                         j <= j + 1;
                     end else begin
@@ -180,14 +134,6 @@ module fsm_ctrl (
                 end
 
                 CALC_OUTPUT: begin
-                    // ---------------------------------------------------------
-                    // Loop duplo: k (classes) × i (neurônios ocultos)
-                    //
-                    // Mesmo padrão de CALC_HIDDEN, mas com k e i.
-                    // i incrementa a cada ciclo (loop interno).
-                    // Quando i=127: zera i, incrementa k.
-                    // Quando k=9 e i=127: zera ambos.
-                    // ---------------------------------------------------------
                     if (i < 127) begin
                         i <= i + 1;
                     end else begin
@@ -199,12 +145,37 @@ module fsm_ctrl (
                     end
                 end
 
+                // -------------------------------------------------------------
+                // CORREÇÃO (BUG 2): done_out e result_out devem ser capturados
+                // no estado ARGMAX — quando argmax_done=1 — para que fiquem
+                // disponíveis no mesmo ciclo em que current_state se torna DONE.
+                //
+                // Fluxo correto:
+                //   posedge com argmax_done=1 (cs=ARGMAX):
+                //     BLOCO2 → next_state = DONE
+                //     BLOCO1 → done_out <= 1, result_out <= max_idx
+                //   Após posedge: cs=DONE, done_out=1, result_out=max_idx  ✓
+                //
+                // Fluxo INCORRETO (original):
+                //   posedge com argmax_done=1 (cs=ARGMAX):
+                //     BLOCO1 → default → done_out <= 0  (nada acontece)
+                //   Após posedge: cs=DONE, done_out=0  ← verificação falha
+                //   Próximo posedge (cs=DONE):
+                //     BLOCO1 → done_out <= 1  (um ciclo atrasado!)
+                // -------------------------------------------------------------
+                ARGMAX: begin
+                    if (argmax_done) begin
+                        result_out <= max_idx;  // captura enquanto cs=ARGMAX
+                        done_out   <= 1;        // disponível quando cs=DONE
+                    end
+                end
+
+                // -------------------------------------------------------------
+                // DONE: limpa done_out após 1 ciclo (comportamento de pulso).
+                // result_out mantém o valor para leitura pelo ARM.
+                // -------------------------------------------------------------
                 DONE: begin
-                    // ---------------------------------------------------------
-                    // Captura o resultado do argmax e sinaliza done por 1 ciclo
-                    // ---------------------------------------------------------
-                    result_out <= max_idx;
-                    done_out   <= 1;
+                    done_out <= 0;
                 end
 
                 default: begin
@@ -215,10 +186,6 @@ module fsm_ctrl (
 
             // -----------------------------------------------------------------
             // Contador de ciclos (CYCLES)
-            //
-            // Incrementa em todos os estados exceto IDLE e DONE.
-            // Congela em DONE para preservar a medição de latência.
-            // Zera quando sai de IDLE (início de nova inferência).
             // -----------------------------------------------------------------
             if (current_state == IDLE && next_state == LOAD_IMG)
                 cycles_out <= 0;
@@ -230,23 +197,11 @@ module fsm_ctrl (
 
     // =========================================================================
     // BLOCO 2 — Combinacional: decide next_state
-    //
-    // Este bloco é PURAMENTE combinacional — não tem registradores.
-    // Ele olha current_state e as condições de transição e decide
-    // qual será o próximo estado.
-    //
-    // Regra: para cada estado, sempre defina next_state — mesmo que
-    // seja "fica no mesmo estado". Deixar next_state indefinido causa
-    // comportamento imprevisível na síntese (latches indesejados).
     // =========================================================================
     always @(*) begin
 
-        // Valor padrão: permanece no estado atual
-        // Isso evita latches — qualquer caminho não coberto pelo case
-        // mantém o estado atual em vez de gerar lógica undefined.
         next_state = current_state;
 
-        // Overflow em qualquer estado ativo → ERROR
         if (overflow && current_state != IDLE && current_state != DONE
                      && current_state != ERROR) begin
             next_state = ERROR;
@@ -255,10 +210,6 @@ module fsm_ctrl (
             case (current_state)
 
                 IDLE: begin
-                    // ---------------------------------------------------------
-                    // Sai do IDLE apenas com start=1
-                    // Qualquer outro ciclo permanece em IDLE
-                    // ---------------------------------------------------------
                     if (start)
                         next_state = LOAD_IMG;
                     else
@@ -266,10 +217,6 @@ module fsm_ctrl (
                 end
 
                 LOAD_IMG: begin
-                    // ---------------------------------------------------------
-                    // Permanece em LOAD_IMG até j=783 (784 pixels carregados)
-                    // No ciclo seguinte vai para CALC_HIDDEN
-                    // ---------------------------------------------------------
                     if (j == 783)
                         next_state = CALC_HIDDEN;
                     else
@@ -277,9 +224,6 @@ module fsm_ctrl (
                 end
 
                 CALC_HIDDEN: begin
-                    // ---------------------------------------------------------
-                    // Permanece até i=127 e j=783 (todos os 128 neurônios)
-                    // ---------------------------------------------------------
                     if (i == 127 && j == 783)
                         next_state = CALC_OUTPUT;
                     else
@@ -287,9 +231,6 @@ module fsm_ctrl (
                 end
 
                 CALC_OUTPUT: begin
-                    // ---------------------------------------------------------
-                    // Permanece até k=9 e i=127 (todas as 10 classes)
-                    // ---------------------------------------------------------
                     if (k == 9 && i == 127)
                         next_state = ARGMAX;
                     else
@@ -297,9 +238,6 @@ module fsm_ctrl (
                 end
 
                 ARGMAX: begin
-                    // ---------------------------------------------------------
-                    // Aguarda pulso de argmax_done vindo do bloco argmax
-                    // ---------------------------------------------------------
                     if (argmax_done)
                         next_state = DONE;
                     else
@@ -307,18 +245,10 @@ module fsm_ctrl (
                 end
 
                 DONE: begin
-                    // ---------------------------------------------------------
-                    // DONE dura exatamente 1 ciclo → volta ao IDLE
-                    // automaticamente, pronto para nova inferência
-                    // ---------------------------------------------------------
                     next_state = IDLE;
                 end
 
                 ERROR: begin
-                    // ---------------------------------------------------------
-                    // ERROR só sai via reset externo (CTRL[1])
-                    // O reset é tratado no bloco sequencial acima
-                    // ---------------------------------------------------------
                     next_state = ERROR;
                 end
 
@@ -330,27 +260,16 @@ module fsm_ctrl (
 
     // =========================================================================
     // BLOCO 3 — Combinacional: gera sinais de controle por estado
-    //
-    // Cada estado ativa um conjunto específico de sinais.
-    // IMPORTANTE: sempre defina TODOS os sinais em todos os estados.
-    // Sinais não definidos em algum estado geram latches na síntese.
-    //
-    // Padrão: define tudo como 0 no início, depois ativa o necessário.
     // =========================================================================
     always @(*) begin
 
-        // ---------------------------------------------------------------------
-        // Valores padrão: todos os sinais desativados
-        // Isso garante que sinais não usados em um estado ficam em 0,
-        // evitando latches e comportamento indefinido.
-        // ---------------------------------------------------------------------
         we_img_fsm  = 0;
-        addr_img    = j;          // endereço da ram_img = contador j
+        addr_img    = j;
         we_hidden   = 0;
-        addr_hidden = i;          // endereço da ram_hidden = contador i
-        addr_w      = {i, j};    // endereço rom_pesos = {neurônio, pixel}
-        addr_bias   = i;          // endereço rom_bias = contador i
-        addr_beta   = {k, i};    // endereço rom_beta = {classe, neurônio}
+        addr_hidden = i;
+        addr_w      = {i, j};
+        addr_bias   = i;
+        addr_beta   = {k, i};
         mac_en      = 0;
         mac_clr     = 0;
         h_capture   = 0;
@@ -361,27 +280,14 @@ module fsm_ctrl (
 
             IDLE: begin
                 status_out = STATUS_IDLE;
-                // Todos os controles em 0 (padrão acima já garante)
             end
 
             LOAD_IMG: begin
-                // -------------------------------------------------------------
-                // Ativa escrita na ram_img a cada ciclo
-                // addr_img = j (já definido no padrão acima)
-                // we_img_fsm pulsa junto com we_img do reg_bank
-                // -------------------------------------------------------------
                 we_img_fsm = 1;
                 status_out = STATUS_BUSY;
             end
 
             CALC_HIDDEN: begin
-                // -------------------------------------------------------------
-                // MAC acumula W[i][j] × x[j] a cada ciclo
-                // Quando j=783 (fim do neurônio i):
-                //   → mac_clr=1: limpa acumulador para próximo neurônio
-                //   → we_hidden=1: salva h[i] = PWL(acumulador) em ram_hidden
-                //   → h_capture=1: sinaliza PWL para capturar resultado
-                // -------------------------------------------------------------
                 mac_en     = 1;
                 status_out = STATUS_BUSY;
 
@@ -393,12 +299,6 @@ module fsm_ctrl (
             end
 
             CALC_OUTPUT: begin
-                // -------------------------------------------------------------
-                // MAC acumula β[k][i] × h[i] a cada ciclo
-                // Quando i=127 (fim da classe k):
-                //   → mac_clr=1: limpa acumulador para próxima classe
-                // O score y[k] = PWL(acumulador) é capturado pelo argmax
-                // -------------------------------------------------------------
                 mac_en     = 1;
                 status_out = STATUS_BUSY;
 
@@ -408,26 +308,15 @@ module fsm_ctrl (
             end
 
             ARGMAX: begin
-                // -------------------------------------------------------------
-                // Habilita o bloco argmax para comparar os 10 scores
-                // -------------------------------------------------------------
                 argmax_en  = 1;
                 status_out = STATUS_BUSY;
             end
 
             DONE: begin
-                // -------------------------------------------------------------
-                // Sinaliza conclusão — STATUS=DONE por 1 ciclo
-                // result_out já foi atualizado no bloco sequencial
-                // -------------------------------------------------------------
                 status_out = STATUS_DONE;
             end
 
             ERROR: begin
-                // -------------------------------------------------------------
-                // Sinaliza erro — aguarda reset externo
-                // Todos os controles permanecem em 0 (padrão acima)
-                // -------------------------------------------------------------
                 status_out = STATUS_ERROR;
             end
 
