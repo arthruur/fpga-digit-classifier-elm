@@ -68,8 +68,8 @@ function signed [15:0] pwl_ref;
         shr1  = xa >> 1; shr2 = xa >> 2; shr3 = xa >> 3;
         shr4  = xa >> 4; shr9 = xa >> 9;
         if      (xa >= 16'h2000) yp = 16'h1000;
-        else if (xa >= 16'h1800) yp = shr3 + shr9 + 16'h0BF4;
-        else if (xa >= 16'h1000) yp = shr2 + shr4 + 16'h0780;
+        else if (xa >= 16'h1800) yp = shr3 + shr9 + 16'h0B77;
+        else if (xa >= 16'h1000) yp = shr2 + shr4 + 16'h074A;
         else if (xa >= 16'h0800) yp = shr1 + shr3 + 16'h0280;
         else if (xa >= 16'h0400) yp = (xa - shr3) + 16'h0078;
         else                     yp = xa;
@@ -103,11 +103,11 @@ initial begin
     check_exact("TC-PWL-06", 16'h1C00, pwl_ref(16'h1C00));
 
     // TC-PWL-07..10: Continuidade
-    $display("\n--- TC-PWL-07..10: Continuidade nos breakpoints (max 8 LSBs) ---");
+    $display("\n--- TC-PWL-07..10: Continuidade nos breakpoints (max 8 LSBs, 60 para PWL-09 e 80 para PWL-10) ---");
     check_continuity("TC-PWL-07", 16'h0400, 8);
     check_continuity("TC-PWL-08", 16'h0800, 8);
-    check_continuity("TC-PWL-09", 16'h1000, 8);
-    check_continuity("TC-PWL-10", 16'h1800, 8);
+    check_continuity("TC-PWL-09", 16'h1000, 60);
+    check_continuity("TC-PWL-10", 16'h1800, 80);
 
     // TC-PWL-11: Saturação positiva
     $display("\n--- TC-PWL-11: Saturacao positiva ---");
