@@ -4,12 +4,25 @@
 // Referência: test_spec_fsm_regbank.md — Módulo 2 (TC-FSM-01 a TC-FSM-18)
 //
 // ESTRATÉGIA DE SIMULAÇÃO:
-// Simular 100.352 ciclos de CALC_HIDDEN seria muito lento.
-// Este testbench usa parâmetros reduzidos para acelerar a simulação:
-//   N_NEURONS = 4   (em vez de 128)
+// Este testbench instancia fsm_ctrl com parâmetros reduzidos para simular
+// transições completas sem esperar 100k+ ciclos:
 //   N_PIXELS  = 8   (em vez de 784)
+//   N_NEURONS = 4   (em vez de 128)
 //   N_CLASSES = 3   (em vez de 10)
-// Os testes de transição são válidos com qualquer dimensão.
+//
+// Impacto nos ciclos totais com parâmetros reduzidos:
+//   LOAD_IMG   :  8  ciclos
+//   CALC_HIDDEN:  4 neurônios × 11 ciclos/neurônio =  44 ciclos
+//   CALC_OUTPUT:  3 classes   ×  6 ciclos/classe   =  18 ciclos
+//   ARGMAX     : depende de argmax_done (controlado pelo TB)
+//   TOTAL      : ~70 ciclos vs ~103.000 com parâmetros reais
+//
+// Testes modificados em relação à versão anterior:
+//   TC-FSM-05 — tick ajustado para N_PIXELS=8 (tick(7) em vez de tick(783))
+//   TC-FSM-06 — adicionado check do ciclo de warmup (mac_en=0 em j=0)
+//   TC-FSM-07 — tick ajustado; adicionado check de bias_cycle; sequência
+//               agora cobre warmup → acumulação → bias → capture+clear
+//   TC-FSM-09 — adicionado check do ciclo de warmup (mac_en=0 em i=0)
 //
 // Como executar (Icarus Verilog):
 //   iverilog -o tb_fsm_ctrl tb_fsm_ctrl.v fsm_ctrl.v && vvp tb_fsm_ctrl
@@ -18,6 +31,13 @@
 `timescale 1ns/1ps
 
 module tb_fsm_ctrl;
+
+    // =========================================================================
+    // Parâmetros reduzidos — ALTERE APENAS AQUI para mudar a dimensão do teste
+    // =========================================================================
+    localparam P_PIXELS  = 8;
+    localparam P_NEURONS = 4;
+    localparam P_CLASSES = 3;
 
     // -------------------------------------------------------------------------
     // Sinais de interface com o DUT
@@ -41,6 +61,7 @@ module tb_fsm_ctrl;
     wire [10:0] addr_beta;
     wire        mac_en;
     wire        mac_clr;
+    wire        bias_cycle;    // NOVO: sinal de ciclo de bias
     wire        h_capture;
     wire        argmax_en;
     wire  [1:0] status_out;
@@ -48,7 +69,7 @@ module tb_fsm_ctrl;
     wire [31:0] cycles_out;
     wire        done_out;
 
-    // Acesso interno ao estado atual (para verificação nos testes)
+    // Acesso interno ao estado e contadores (para verificação)
     wire  [2:0] current_state;
     assign current_state = dut.current_state;
 
@@ -68,12 +89,15 @@ module tb_fsm_ctrl;
     // -------------------------------------------------------------------------
     integer pass_count;
     integer fail_count;
-    integer cycle_count;
 
     // -------------------------------------------------------------------------
-    // Instância do DUT
+    // Instância do DUT com parâmetros reduzidos
     // -------------------------------------------------------------------------
-    fsm_ctrl dut (
+    fsm_ctrl #(
+        .N_PIXELS  (P_PIXELS),
+        .N_NEURONS (P_NEURONS),
+        .N_CLASSES (P_CLASSES)
+    ) dut (
         .clk         (clk),
         .rst_n       (rst_n),
         .start       (start),
@@ -91,6 +115,7 @@ module tb_fsm_ctrl;
         .addr_beta   (addr_beta),
         .mac_en      (mac_en),
         .mac_clr     (mac_clr),
+        .bias_cycle  (bias_cycle),
         .h_capture   (h_capture),
         .argmax_en   (argmax_en),
         .status_out  (status_out),
@@ -169,7 +194,7 @@ module tb_fsm_ctrl;
         end
     endtask
 
-    // Task: avança a FSM até um estado alvo (máx 200.000 ciclos)
+    // Avança até o estado alvo (máx 200.000 ciclos)
     task wait_for_state;
         input [2:0] target;
         integer timeout;
@@ -184,12 +209,12 @@ module tb_fsm_ctrl;
         end
     endtask
 
-    // Task: avança N ciclos de clock
+    // Avança N bordas de subida do clock
     task tick;
         input integer n;
-        integer k;
+        integer kk;
         begin
-            for (k = 0; k < n; k = k + 1)
+            for (kk = 0; kk < n; kk = kk + 1)
                 @(posedge clk);
         end
     endtask
@@ -211,11 +236,13 @@ module tb_fsm_ctrl;
 
         $display("=============================================================");
         $display(" tb_fsm_ctrl — Iniciando testes (TC-FSM-01 a TC-FSM-18)");
+        $display(" Parâmetros: N_PIXELS=%0d  N_NEURONS=%0d  N_CLASSES=%0d",
+                 P_PIXELS, P_NEURONS, P_CLASSES);
         $display("=============================================================");
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-01 — Reset assíncrono leva ao estado IDLE
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-01: reset assíncrono → IDLE --");
         do_reset;
         check_state(1, current_state, IDLE, "estado");
@@ -223,38 +250,37 @@ module tb_fsm_ctrl;
         check1(1, "we_img_fsm=0",we_img_fsm, 1'b0);
         check1(1, "we_hidden=0", we_hidden,  1'b0);
         check1(1, "argmax_en=0", argmax_en,  1'b0);
+        check1(1, "bias_cycle=0",bias_cycle, 1'b0);
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-02 — IDLE permanece em IDLE sem start
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-02: IDLE permanece sem start --");
         do_reset;
         tick(10);
         check_state(2, current_state, IDLE, "apos_10_ciclos");
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-03 — IDLE → LOAD_IMG quando start=1
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-03: IDLE → LOAD_IMG com start=1 --");
         do_reset;
-
         @(posedge clk); #1;
         start = 1;
         @(posedge clk); #1;
         start = 0;
         check_state(3, current_state, LOAD_IMG, "apos_start");
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-04 — LOAD_IMG: we_img_fsm=1 e addr_img=j incrementando
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-04: LOAD_IMG sinais corretos --");
         do_reset;
-
         @(posedge clk); #1;
         start = 1;
         @(posedge clk); #1;
         start = 0;
-
+        // Continua em LOAD_IMG; j=0 após entrar no estado
         begin : check_load
             integer c;
             for (c = 0; c < 4; c = c + 1) begin
@@ -270,114 +296,144 @@ module tb_fsm_ctrl;
             end
         end
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-05 — LOAD_IMG → CALC_HIDDEN após 784 pixels
+        // =====================================================================
+        // TC-FSM-05 — LOAD_IMG → CALC_HIDDEN após N_PIXELS ciclos
         //
-        // CORREÇÃO (BUG 1): tick(782) → tick(783)
-        //
-        // Motivo: a condição de transição (BLOCO 2) é combinacional e lê j
-        // ANTES da atualização de BLOCO 1 (não-bloqueante). Portanto:
-        //
-        //   Ciclo com j=782: BLOCO2 vê j=782 → permanece LOAD_IMG
-        //                    BLOCO1 atualiza j para 783
-        //   Ciclo com j=783: BLOCO2 vê j=783 → seta next_state=CALC_HIDDEN
-        //                    BLOCO1 reseta j para 0
-        //   Ciclo seguinte:  current_state = CALC_HIDDEN  ✓
-        //
-        // Com tick(782): j→782, check LOAD_IMG ✓, @posedge → j=783 ainda LOAD_IMG!
-        // Com tick(783): j→783, check LOAD_IMG ✓, @posedge → CALC_HIDDEN ✓
-        // ---------------------------------------------------------------------
-        $display("\n-- TC-FSM-05: LOAD_IMG → CALC_HIDDEN apos 784 ciclos --");
+        // Com N_PIXELS=8: LOAD_IMG percorre j=0..7 (8 ciclos).
+        // Após entrar em LOAD_IMG (j=0), tick(7) leva j até 7.
+        // BLOCO 2 vê j==N_PIXELS-1=7 → next_state=CALC_HIDDEN.
+        // Após o próximo posedge: state=CALC_HIDDEN, j=0.
+        // =====================================================================
+        $display("\n-- TC-FSM-05: LOAD_IMG → CALC_HIDDEN após %0d pixels --", P_PIXELS);
         do_reset;
-
         @(posedge clk); #1;
         start = 1;
         @(posedge clk); #1;
         start = 0;
+        // Estado: LOAD_IMG, j=0
 
-        // Avança 783 ciclos: j=783, ainda em LOAD_IMG (784º pixel sendo carregado)
-        tick(783);
-        check_state(5, current_state, LOAD_IMG, "ciclo_784_j783");
+        tick(P_PIXELS - 1);   // j: 0 → N_PIXELS-1 = 7.  Ainda em LOAD_IMG.
+        check_state(5, current_state, LOAD_IMG, "ultimo_pixel_j7");
 
-        // Próximo ciclo: transiciona para CALC_HIDDEN
-        @(posedge clk); #1;
-        check_state(5, current_state, CALC_HIDDEN, "ciclo_785");
+        @(posedge clk); #1;   // Transição: LOAD_IMG → CALC_HIDDEN, j→0
+        check_state(5, current_state, CALC_HIDDEN, "transicao");
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-06 — CALC_HIDDEN: mac_en=1 e endereços corretos
-        // (continua do TC-FSM-05: cs=CALC_HIDDEN, j=0, i=0)
-        // ---------------------------------------------------------------------
-        $display("\n-- TC-FSM-06: CALC_HIDDEN mac_en e enderecos --");
+        // =====================================================================
+        // TC-FSM-06 — CALC_HIDDEN: warmup em j=0 e acumulação em j=1
+        //
+        // Continua de TC-FSM-05: state=CALC_HIDDEN, j=0 (warmup).
+        //
+        // MUDANÇA em relação à versão anterior:
+        //   Antes: verificava mac_en=1 imediatamente ao entrar no estado.
+        //   Agora: j=0 é o ciclo de warmup (mac_en=0).
+        //          Avança 1 ciclo para j=1 e verifica mac_en=1.
+        // =====================================================================
+        $display("\n-- TC-FSM-06: CALC_HIDDEN warmup j=0 e acumulação j=1 --");
 
-        check1(6, "mac_en=1", mac_en, 1'b1);
+        // j=0: warmup
         check_state(6, current_state, CALC_HIDDEN, "estado");
-
+        check1(6, "mac_en=0 warmup j=0",    mac_en,    1'b0);
+        check1(6, "bias_cycle=0 warmup j=0",bias_cycle,1'b0);
         if (addr_w === {7'd0, 10'd0}) begin
-            $display("  PASS  TC-FSM-06 | addr_w={0,0} correto");
+            $display("  PASS  TC-FSM-06 | addr_w={0,0} correto no warmup");
             pass_count = pass_count + 1;
         end else begin
             $display("  FAIL  TC-FSM-06 | addr_w=0x%05X exp={0,0}  <---", addr_w);
             fail_count = fail_count + 1;
         end
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-07 — CALC_HIDDEN: mac_clr e we_hidden ao fim de cada neurônio
-        // (continua do TC-FSM-06: j=0, i=0)
+        @(posedge clk); #1;   // j=0→1: inicia acumulação
+        check1(6, "mac_en=1 j=1",    mac_en,    1'b1);
+        check1(6, "mac_clr=0 j=1",   mac_clr,   1'b0);
+        check1(6, "bias_cycle=0 j=1",bias_cycle,1'b0);
+
+        // =====================================================================
+        // TC-FSM-07 — CALC_HIDDEN: ciclo de bias e captura+clear ao fim do neurônio
         //
-        // tick(782): j vai de 0 até 782 (783 ciclos em CALC_HIDDEN)
-        // @posedge:  j=782→783 — fim do neurônio 0
-        // Verifica mac_clr=1, we_hidden=1, h_capture=1
-        // @posedge:  j=783→0, i→1 — sinaliza fim de ciclo
-        // Verifica mac_clr=0, we_hidden=0
-        // ---------------------------------------------------------------------
-        $display("\n-- TC-FSM-07: mac_clr e we_hidden ao fim do neuronio --");
+        // Continua de TC-FSM-06: state=CALC_HIDDEN, j=1 (acumulação).
+        //
+        // Com N_PIXELS=8, a sequência completa do neurônio 0 a partir de j=1:
+        //   j=1..8   acumulação (8 pixels)   → tick(N_PIXELS-1) = tick(7)
+        //   j=9      bias                    → @posedge → bias_cycle=1
+        //   j=10     captura+clear           → @posedge → mac_clr=1, we_hidden=1
+        //   j=0      warmup neurônio 1       → @posedge → mac_clr=0
+        //
+        // MUDANÇA em relação à versão anterior:
+        //   Antes: tick(782), depois verificava j=783 com mac_clr+we_hidden.
+        //   Agora: tick(7) leva de j=1 a j=8; depois @posedge → j=9 (bias),
+        //          depois @posedge → j=10 (capture+clear).
+        //   Adicionado: verificação de bias_cycle=1 em j=9.
+        // =====================================================================
+        $display("\n-- TC-FSM-07: bias_cycle e capture+clear ao fim do neurônio --");
+        // Partindo de j=1
 
-        tick(782);   // j vai de 0 até 782
-        @(posedge clk); #1;   // j=783 — fim do neurônio 0
+        tick(P_PIXELS - 1);   // j: 1 → N_PIXELS = 8  (último pixel)
 
-        check1(7, "mac_clr=1",   mac_clr,   1'b1);
-        check1(7, "we_hidden=1", we_hidden, 1'b1);
-        check1(7, "h_capture=1", h_capture, 1'b1);
+        @(posedge clk); #1;   // j: 8 → 9  (bias cycle)
+        check1(7, "bias_cycle=1 j=N_PIXELS+1", bias_cycle, 1'b1);
+        check1(7, "mac_en=1 bias",             mac_en,     1'b1);
+        check1(7, "mac_clr=0 bias",            mac_clr,    1'b0);
+        check1(7, "we_hidden=0 bias",          we_hidden,  1'b0);
 
-        // No ciclo seguinte, esses sinais devem voltar a 0
-        @(posedge clk); #1;   // j→0, i→1
-        check1(7, "mac_clr=0 ciclo+1",   mac_clr,   1'b0);
-        check1(7, "we_hidden=0 ciclo+1", we_hidden, 1'b0);
+        @(posedge clk); #1;   // j: 9 → 10  (captura+clear)
+        check1(7, "mac_clr=1 j=N_PIXELS+2",   mac_clr,   1'b1);
+        check1(7, "we_hidden=1 j=N_PIXELS+2", we_hidden, 1'b1);
+        check1(7, "h_capture=1 j=N_PIXELS+2", h_capture, 1'b1);
+        check1(7, "mac_en=0 j=N_PIXELS+2",    mac_en,    1'b0);
+        check1(7, "bias_cycle=0 capture",      bias_cycle,1'b0);
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-08 — CALC_HIDDEN → CALC_OUTPUT após todos os neurônios
-        // ---------------------------------------------------------------------
+        @(posedge clk); #1;   // j→0, i→1: warmup do próximo neurônio
+        check1(7, "mac_clr=0 apos_clear",   mac_clr,   1'b0);
+        check1(7, "we_hidden=0 apos_clear", we_hidden, 1'b0);
+        check1(7, "mac_en=0 warmup",        mac_en,    1'b0);
+
+        // =====================================================================
+        // TC-FSM-08 — CALC_HIDDEN → CALC_OUTPUT após N_NEURONS neurônios
+        // =====================================================================
         $display("\n-- TC-FSM-08: CALC_HIDDEN → CALC_OUTPUT --");
+        // Com parâmetros reduzidos: 4×11=44 ciclos de CALC_HIDDEN no total.
+        // wait_for_state aguarda sem timeout até 200k ciclos.
         wait_for_state(CALC_OUTPUT);
         check_state(8, current_state, CALC_OUTPUT, "transicao");
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-09 — CALC_OUTPUT: endereços rom_beta e ram_hidden corretos
-        // ---------------------------------------------------------------------
-        $display("\n-- TC-FSM-09: CALC_OUTPUT enderecos corretos --");
-        check1(9, "mac_en=1", mac_en, 1'b1);
+        // =====================================================================
+        // TC-FSM-09 — CALC_OUTPUT: warmup em i=0 e acumulação em i=1
+        //
+        // Continua de TC-FSM-08: state=CALC_OUTPUT, i=0 (warmup).
+        //
+        // MUDANÇA em relação à versão anterior:
+        //   Antes: verificava mac_en=1 imediatamente ao entrar no estado.
+        //   Agora: i=0 é o ciclo de warmup (mac_en=0).
+        //          Avança 1 ciclo para i=1 e verifica mac_en=1.
+        // =====================================================================
+        $display("\n-- TC-FSM-09: CALC_OUTPUT warmup i=0 e acumulação i=1 --");
 
+        // i=0: warmup
+        check1(9, "mac_en=0 warmup i=0", mac_en, 1'b0);
         if (addr_beta === {4'd0, 7'd0}) begin
-            $display("  PASS  TC-FSM-09 | addr_beta={0,0} correto");
+            $display("  PASS  TC-FSM-09 | addr_beta={0,0} correto no warmup");
             pass_count = pass_count + 1;
         end else begin
             $display("  FAIL  TC-FSM-09 | addr_beta=0x%03X exp={0,0}  <---", addr_beta);
             fail_count = fail_count + 1;
         end
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-10 — CALC_OUTPUT → ARGMAX após 10 classes
-        // ---------------------------------------------------------------------
+        @(posedge clk); #1;   // i=0→1: inicia acumulação
+        check1(9, "mac_en=1 i=1",  mac_en,  1'b1);
+        check1(9, "mac_clr=0 i=1", mac_clr, 1'b0);
+
+        // =====================================================================
+        // TC-FSM-10 — CALC_OUTPUT → ARGMAX após N_CLASSES classes
+        // =====================================================================
         $display("\n-- TC-FSM-10: CALC_OUTPUT → ARGMAX --");
         wait_for_state(ARGMAX);
         check_state(10, current_state, ARGMAX, "transicao");
         check1(10, "argmax_en=1", argmax_en, 1'b1);
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-11 — ARGMAX → DONE quando argmax_done=1
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-11: ARGMAX → DONE com argmax_done=1 --");
-
         @(posedge clk); #1;
         argmax_done = 1;
         max_idx     = 4'd7;
@@ -385,13 +441,9 @@ module tb_fsm_ctrl;
         argmax_done = 0;
         check_state(11, current_state, DONE, "transicao");
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-12 — DONE: done_out=1 e result correto
-        //
-        // Com a correção do BUG 2: done_out e result_out são atribuídos no
-        // estado ARGMAX (quando argmax_done=1), não no estado DONE.
-        // Assim, ficam disponíveis no mesmo ciclo em que cs=DONE.
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-12: DONE sinais corretos --");
         check1(12, "done_out=1", done_out, 1'b1);
         if (status_out === 2'b10) begin
@@ -401,32 +453,30 @@ module tb_fsm_ctrl;
             $display("  FAIL  TC-FSM-12 | STATUS got=%b exp=10  <---", status_out);
             fail_count = fail_count + 1;
         end
+        check_val(12, "result_out", result_out, 32'd7);
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-13 — DONE → IDLE automaticamente após 1 ciclo
-        // ---------------------------------------------------------------------
-        $display("\n-- TC-FSM-13: DONE → IDLE automatico --");
+        // =====================================================================
+        $display("\n-- TC-FSM-13: DONE → IDLE automático --");
         @(posedge clk); #1;
         check_state(13, current_state, IDLE, "apos_done");
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-14 — ERROR: overflow leva ao estado ERROR
-        // ---------------------------------------------------------------------
+        // =====================================================================
+        // TC-FSM-14 — ERROR: overflow da MAC leva ao estado ERROR
+        // =====================================================================
         $display("\n-- TC-FSM-14: overflow → ERROR --");
         do_reset;
-
         @(posedge clk); #1;
         start = 1;
         @(posedge clk); #1;
         start = 0;
         wait_for_state(CALC_HIDDEN);
-
         @(posedge clk); #1;
         overflow = 1;
         @(posedge clk); #1;
         overflow = 0;
         check_state(14, current_state, ERROR, "apos_overflow");
-
         if (status_out === 2'b11) begin
             $display("  PASS  TC-FSM-14 | STATUS=ERROR");
             pass_count = pass_count + 1;
@@ -435,23 +485,21 @@ module tb_fsm_ctrl;
             fail_count = fail_count + 1;
         end
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-15 — ERROR → IDLE via reset externo
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-15: ERROR → IDLE via reset --");
-
         @(posedge clk); #1;
         reset = 1;
         @(posedge clk); #1;
         reset = 0;
         check_state(15, current_state, IDLE, "apos_reset");
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-16 — Contador CYCLES incrementa e congela em DONE
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-16: contador CYCLES --");
         do_reset;
-
         check_val(16, "cycles_idle", cycles_out, 32'd0);
 
         @(posedge clk); #1;
@@ -481,13 +529,13 @@ module tb_fsm_ctrl;
             check_val(16, "cycles_congelado", cycles_out, cycles_at_done);
         end
 
-        // ---------------------------------------------------------------------
-        // TC-FSM-17 — Duas inferências consecutivas sem contaminação
-        // ---------------------------------------------------------------------
-        $display("\n-- TC-FSM-17: duas inferencias consecutivas --");
+        // =====================================================================
+        // TC-FSM-17 — Duas inferências consecutivas: sem contaminação
+        // =====================================================================
+        $display("\n-- TC-FSM-17: duas inferências consecutivas --");
         do_reset;
 
-        // Primeira inferência
+        // Primeira inferência — pred=3
         @(posedge clk); #1;
         start = 1;
         @(posedge clk); #1;
@@ -499,10 +547,10 @@ module tb_fsm_ctrl;
         @(posedge clk); #1;
         argmax_done = 0;
 
-        @(posedge clk); #1;
+        @(posedge clk); #1;   // DONE → IDLE
         check_state(17, current_state, IDLE, "volta_idle");
 
-        // Segunda inferência
+        // Segunda inferência — pred=8
         @(posedge clk); #1;
         start = 1;
         @(posedge clk); #1;
@@ -513,22 +561,22 @@ module tb_fsm_ctrl;
         max_idx     = 4'd8;
         @(posedge clk); #1;
         argmax_done = 0;
-        // Em DONE — result_out deve ser 8 (capturado no ARGMAX com BUG 2 corrigido)
-        check_val(17, "result_segunda", result_out, 32'd8);
+        // Em DONE agora — result_out deve ser 8
+        check_val(17, "result_segunda_inferencia", result_out, 32'd8);
 
-        // ---------------------------------------------------------------------
+        // =====================================================================
         // TC-FSM-18 — Reset no meio de CALC_HIDDEN aborta → IDLE
-        // ---------------------------------------------------------------------
+        // =====================================================================
         $display("\n-- TC-FSM-18: reset no meio de CALC_HIDDEN --");
         do_reset;
-
         @(posedge clk); #1;
         start = 1;
         @(posedge clk); #1;
         start = 0;
         wait_for_state(CALC_HIDDEN);
 
-        tick(300);
+        // Avança alguns ciclos dentro de CALC_HIDDEN (seguro: 5 < 44 total)
+        tick(5);
 
         @(posedge clk); #1;
         reset = 1;
@@ -538,8 +586,9 @@ module tb_fsm_ctrl;
         check_state(18, current_state, IDLE, "abort_reset");
         check1(18, "mac_en=0",    mac_en,    1'b0);
         check1(18, "we_hidden=0", we_hidden, 1'b0);
+        check1(18, "bias_cycle=0",bias_cycle,1'b0);
 
-        if (dut.i === 7'd0 && dut.j === 10'd0 && dut.k === 4'd0) begin
+        if (dut.i === 0 && dut.j === 0 && dut.k === 0) begin
             $display("  PASS  TC-FSM-18 | contadores zerados i=0 j=0 k=0");
             pass_count = pass_count + 1;
         end else begin
