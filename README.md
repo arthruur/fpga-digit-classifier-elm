@@ -50,6 +50,7 @@ MNIST. O co-processador é descrito em Verilog RTL e sintetizado para a platafor
 | RNF-04 | Pesos da rede armazenados em ROM inicializada por arquivo MIF/HEX |
 | RNF-05 | Simulação RTL validada com golden model Python antes da síntese |
 | RNF-06 | Código RTL sintetizável no Quartus Prime Lite para Cyclone V (DE1-SoC) |
+| RNF-07 | Tempo de inferência inferior a 1 minuto |
 
 ### 1.3 Mapa de Registradores MMIO
 
