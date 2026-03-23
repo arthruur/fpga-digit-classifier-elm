@@ -41,9 +41,9 @@ module tb_rom_beta;
     // Verificação:
     //   -131 & 0xFFFF = 65536 - 131 = 65405 = 0xFF7D ✓
     // -------------------------------------------------------------------------
-    localparam BETA_0_0   = 16'hFF7D;   // β[0][0]   addr=0
-    localparam BETA_9_127 = 16'h000B;   // β[9][127] addr=1279
-    localparam BETA_1_0   = 16'h000D;   // β[1][0]   addr=128 (para TC-BETA-03)
+
+    // Valores lidos dinamicamente de expected[] carregado via $readmemh.
+    // Layout: posição = neuron * 10 + class  (ex: neuron=3, class=7 → addr=37)
 
     // -------------------------------------------------------------------------
     // Array para varredura (TC-BETA-04)
@@ -94,7 +94,7 @@ module tb_rom_beta;
         fail_count = 0;
         addr = 0;
 
-        $readmemh("beta.hex", expected);
+        $readmemh("beta_q.hex", expected);
 
         #3;
 
@@ -111,10 +111,10 @@ module tb_rom_beta;
         // ---------------------------------------------------------------------
         $display("\n-- TC-BETA-01: leitura beta[0][0] (esperado 0xFF7D = -131) --");
         @(posedge clk); #1;
-        addr = {4'd0, 7'd0};
+        addr = 11'd0;   // 0*10+0 = 0
 
         @(posedge clk); #1;
-        check(1, data_out, BETA_0_0);
+        check(1, data_out, expected[0]);
 
         // ---------------------------------------------------------------------
         // TC-BETA-02 — Leitura de β[9][127] (endereço máximo = 1279)
@@ -122,12 +122,11 @@ module tb_rom_beta;
         // β[9][127] = 11 → 0x000B
         // Endereço: {4'd9, 7'd127} = 11'd1279
         // ---------------------------------------------------------------------
-        $display("\n-- TC-BETA-02: leitura beta[9][127] (addr maximo, esperado 0x000B = 11) --");
+        $display("\n-- TC-BETA-02: leitura addr=1279 (neuron=127, class=9 — maximo) --");
         @(posedge clk); #1;
-        addr = {4'd9, 7'd127};
-
+        addr = 11'd1279;       // 127*10+9 = 1279
         @(posedge clk); #1;
-        check(2, data_out, BETA_9_127);
+        check(2, data_out, expected[1279]);
 
         // ---------------------------------------------------------------------
         // TC-BETA-03 — Independência entre classes: β[0][0] ≠ β[1][0]
@@ -136,32 +135,26 @@ module tb_rom_beta;
         // β[1][0] =   13 (0x000D)   addr = 128
         // Verifica que class_idx distingue corretamente as linhas de β.
         // ---------------------------------------------------------------------
-        $display("\n-- TC-BETA-03: independencia entre classes --");
+        $display("\n-- TC-BETA-03: independencia entre classes (neuron=0: class=0 vs class=1) --");
+        @(posedge clk); #1;
+        addr = 11'd0;          // neuron=0, class=0 → 0*10+0 = 0
+        @(posedge clk); #1;
+        // data_out = expected[0]
 
-        // Lê β[0][0]
         @(posedge clk); #1;
-        addr = {4'd0, 7'd0};
+        addr = 11'd1;          // neuron=0, class=1 → 0*10+1 = 1
         @(posedge clk); #1;
-        // data_out = β[0][0] = 0xFF7D
+        // data_out = expected[1]
 
-        // Lê β[1][0]
-        @(posedge clk); #1;
-        addr = {4'd1, 7'd0};
-        @(posedge clk); #1;
-        // data_out = β[1][0] = 0x000D
-
-        // Verifica que β[1][0] ≠ β[0][0]
-        if (data_out !== BETA_0_0) begin
-            $display("  PASS  TC-BETA-03 | beta[1][0]=0x%04X != beta[0][0]=0x%04X: classes independentes",
-                     data_out, BETA_0_0);
+        if (data_out !== expected[0]) begin
+            $display("  PASS  TC-BETA-03 | addr=1 (0x%04X) != addr=0 (0x%04X): classes independentes",
+                    data_out, expected[0]);
             pass_count = pass_count + 1;
         end else begin
-            $display("  FAIL  TC-BETA-03 | beta[0][0] == beta[1][0]: class_idx incorreto?  <---");
+            $display("  FAIL  TC-BETA-03 | addr=0 == addr=1: class_idx sem efeito?  <---");
             fail_count = fail_count + 1;
         end
-
-        // Verifica também o valor exato de β[1][0]
-        check(3, data_out, BETA_1_0);
+        check(3, data_out, expected[1]);
 
         // ---------------------------------------------------------------------
         // TC-BETA-04 — Varredura por amostragem: 3 classes × 3 neurônios
@@ -178,22 +171,19 @@ module tb_rom_beta;
             integer neuron;
             integer expected_addr;
 
+        for (neuron = 0; neuron <= 127; neuron = neuron + 63) begin
+            if (neuron == 126) neuron = 127;
             for (classe = 0; classe <= 9; classe = classe + 4) begin
                 if (classe == 8) classe = 9;
-
-                for (neuron = 0; neuron <= 127; neuron = neuron + 63) begin
-                    if (neuron == 126) neuron = 127;
-
-                    expected_addr = classe * 128 + neuron;
-
-                    @(posedge clk); #1;
-                    addr = {classe[3:0], neuron[6:0]};
-
-                    @(posedge clk); #1;
-
-                    if (data_out !== expected[expected_addr]) begin
-                        $display("  FAIL  TC-BETA-04 | beta[%0d][%0d] got=0x%04X exp=0x%04X  <---",
-                                 classe, neuron, data_out, expected[expected_addr]);
+                expected_addr = neuron * 10 + classe;
+                @(posedge clk); #1;
+                addr = ({4'b0, neuron[6:0]} << 3)
+                    + ({4'b0, neuron[6:0]} << 1)
+                    + {7'b0, classe[3:0]};
+                @(posedge clk); #1;
+                if (data_out !== expected[expected_addr]) begin
+                    $display("  FAIL  TC-BETA-04 | addr=%0d (n=%0d,c=%0d) got=0x%04X exp=0x%04X  <---",
+                            expected_addr, neuron, classe, data_out, expected[expected_addr]);
                         fail_count = fail_count + 1;
                         test_passed = 0;
                     end

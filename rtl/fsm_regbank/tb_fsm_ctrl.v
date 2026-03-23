@@ -410,17 +410,26 @@ module tb_fsm_ctrl;
 
         // i=0: warmup
         check1(9, "mac_en=0 warmup i=0", mac_en, 1'b0);
-        if (addr_beta === {4'd0, 7'd0}) begin
-            $display("  PASS  TC-FSM-09 | addr_beta={0,0} correto no warmup");
+        if (addr_beta === 11'd0) begin
+            $display("  PASS  TC-FSM-09 | addr_beta=0 correto no warmup (n=0,c=0 → 0*10+0=0)");
             pass_count = pass_count + 1;
         end else begin
-            $display("  FAIL  TC-FSM-09 | addr_beta=0x%03X exp={0,0}  <---", addr_beta);
+            $display("  FAIL  TC-FSM-09 | addr_beta=%0d exp=0  <---", addr_beta);
             fail_count = fail_count + 1;
         end
 
         @(posedge clk); #1;   // i=0→1: inicia acumulação
         check1(9, "mac_en=1 i=1",  mac_en,  1'b1);
         check1(9, "mac_clr=0 i=1", mac_clr, 1'b0);
+
+        // addr_beta em i=1, k=0: 1*10+0 = 10
+        if (addr_beta === 11'd10) begin
+            $display("  PASS  TC-FSM-09 | addr_beta=10 correto em i=1,k=0 (1*10+0=10)");
+            pass_count = pass_count + 1;
+        end else begin
+            $display("  FAIL  TC-FSM-09 | addr_beta=%0d exp=10  <---", addr_beta);
+            fail_count = fail_count + 1;
+        end
 
         // =====================================================================
         // TC-FSM-10 — CALC_OUTPUT → ARGMAX após N_CLASSES classes

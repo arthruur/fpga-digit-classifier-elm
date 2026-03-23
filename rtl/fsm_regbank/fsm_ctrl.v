@@ -75,7 +75,8 @@ module fsm_ctrl #(
     output reg   [6:0] addr_hidden,   // endereço ram_hidden = i[6:0]
     output reg  [16:0] addr_w,        // endereço rom_pesos = {i[6:0], j}
     output reg   [6:0] addr_bias,     // endereço rom_bias  = i[6:0]
-    output reg  [10:0] addr_beta,     // endereço rom_beta  = {k, i[6:0]}
+    output reg  [10:0] addr_beta,     // endereço rom_beta  = ({7'b0, i[6:0]} << 3) + ({7'b0, i[6:0]} << 1) + {7'b0, k};
+
 
     // -------------------------------------------------------------------------
     // Sinais de controle para o datapath
@@ -94,7 +95,9 @@ module fsm_ctrl #(
     output reg   [1:0] status_out,    // IDLE/BUSY/DONE/ERROR
     output reg   [3:0] result_out,    // dígito previsto (0..9)
     output reg  [31:0] cycles_out,    // contador de ciclos
-    output reg         done_out       // pulso: inferência concluída
+    output reg         done_out,       // pulso: inferência concluída
+    output reg        calc_output_active, // 1 quando current_state == CALC_OUTPUT
+    output wire [3:0] k_out               // índice de classe atual (0..9)
 );
 
     // =========================================================================
@@ -233,56 +236,30 @@ module fsm_ctrl #(
     // BLOCO 2 — Combinacional: decide next_state
     // =========================================================================
     always @(*) begin
-
         next_state = current_state;
 
-        if (overflow && current_state != IDLE && current_state != DONE
-                     && current_state != ERROR) begin
-            next_state = ERROR;
+        case (current_state)
+            IDLE:        next_state = start ? LOAD_IMG : IDLE;
 
-        end else begin
-            case (current_state)
+            LOAD_IMG:    next_state = (j == N_PIXELS - 1)
+                                    ? CALC_HIDDEN : LOAD_IMG;
 
-                IDLE: begin
-                    next_state = start ? LOAD_IMG : IDLE;
-                end
+            CALC_HIDDEN: next_state = (i == N_NEURONS - 1 && j == N_PIXELS + 2)
+                                    ? CALC_OUTPUT : CALC_HIDDEN;
 
-                LOAD_IMG: begin
-                    // Transição após N_PIXELS ciclos (j=0..N_PIXELS-1)
-                    next_state = (j == N_PIXELS - 1) ? CALC_HIDDEN : LOAD_IMG;
-                end
+            CALC_OUTPUT: next_state = (k == N_CLASSES - 1 && i == N_NEURONS + 1)
+                                    ? ARGMAX : CALC_OUTPUT;
 
-                CALC_HIDDEN: begin
-                    // Transição quando o último neurônio completa o ciclo de
-                    // captura+clear (j=N_PIXELS+2, i=N_NEURONS-1)
-                    next_state = (i == N_NEURONS - 1 && j == N_PIXELS + 2)
-                                 ? CALC_OUTPUT : CALC_HIDDEN;
-                end
+            ARGMAX:      next_state = argmax_done ? DONE : ARGMAX;
 
-                CALC_OUTPUT: begin
-                    // Transição quando a última classe completa o ciclo de
-                    // captura+clear (i=N_NEURONS+1, k=N_CLASSES-1)
-                    next_state = (k == N_CLASSES - 1 && i == N_NEURONS + 1)
-                                 ? ARGMAX : CALC_OUTPUT;
-                end
+            DONE:        next_state = IDLE;
 
-                ARGMAX: begin
-                    next_state = argmax_done ? DONE : ARGMAX;
-                end
+            ERROR:       next_state = reset ? IDLE : ERROR;
 
-                DONE: begin
-                    next_state = IDLE;
-                end
-
-                ERROR: begin
-                    next_state = ERROR;
-                end
-
-                default: next_state = IDLE;
-
-            endcase
-        end
+            default:     next_state = IDLE;
+        endcase
     end
+
 
     // =========================================================================
     // BLOCO 3 — Combinacional: gera sinais de controle por estado
@@ -299,10 +276,13 @@ module fsm_ctrl #(
         addr_hidden = i[6:0];
         addr_w      = {i[6:0], j[9:0]};
         addr_bias   = i[6:0];
-        addr_beta   = {k, i[6:0]};
+        addr_beta   = ({4'b0, i[6:0]} << 3)
+                        + ({4'b0, i[6:0]} << 1)
+                        + {7'b0, k};
         mac_en      = 0;
         mac_clr     = 0;
         bias_cycle  = 0;
+        calc_output_active = 0;
         h_capture   = 0;
         argmax_en   = 0;
         status_out  = STATUS_IDLE;
@@ -390,6 +370,7 @@ module fsm_ctrl #(
             // INVARIANTE: mac_clr e mac_en nunca são 1 simultaneamente.
             // -----------------------------------------------------------------
             CALC_OUTPUT: begin
+                calc_output_active = 1;
                 status_out = STATUS_BUSY;
 
                 if (i == 0) begin
@@ -426,5 +407,6 @@ module fsm_ctrl #(
 
         endcase
     end
+    assign k_out = k[3:0];
 
 endmodule

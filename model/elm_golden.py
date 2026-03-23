@@ -1,277 +1,337 @@
 #!/usr/bin/env python3
 """
-elm_golden.py  –  Modelo de referência do co-processador ELM
-Marco 1  |  TEC 499 MI Sistemas Digitais  |  UEFS 2026.1
-
-Implementa EXATAMENTE a mesma aritmética do hardware:
-  • Q4.12 fixed-point (inteiro com 12 bits fracionários)
-  • Acumulador Q8.24 (32 bits com sinal)
-  • Saturação nos limites Q4.12 [-8.0, ~7.9998]
-  • Ativação PWL (5 segmentos), mesmos breakpoints do pwl_activation.v
+elm_golden.py — Modelo de referência (golden model) para elm_accel
+Implementa a mesma aritmética Q4.12 e PWL do hardware Verilog.
+Gera arquivos HEX para alimentar tb_elm_accel.v.
 
 Uso:
-    python3 elm_golden.py --pesos pesos.hex --bias bias.hex \
-                          --beta beta.hex  --img img.hex
+    python elm_golden.py <imagem.png> [--digit N] [--model path] [--outdir path]
 
-Formato dos arquivos .hex:
-    Um valor hexadecimal de 16 bits por linha (sem prefixo "0x").
-    Exemplo: 0800   → 0.5 em Q4.12
+Saídas:
+    img_test.hex  — 784 pixels (8-bit, uma linha por pixel)
+    z_hidden.hex  — 128 pré-ativações da camada oculta (Q4.12)
+    h_ref.hex     — 128 ativações PWL (Q4.12)
+    z_output.hex  — 10 scores da camada de saída (Q4.12)
+    pred_ref.hex  — dígito predito (0-9, 1 byte)
 
-Saída JSON (stdout):
-    { "pred": 3, "h": [...], "y": [...] }
+Exemplo:
+    python elm_golden.py model/test/3/30.png --digit 3 \\
+           --model model_elm_q.npz --outdir sim/
 """
 
-import argparse
-import json
 import sys
+import argparse
+import numpy as np
+from PIL import Image
+from pathlib import Path
 
-# ============================================================
-#  Aritmética Q4.12
-# ============================================================
-FRAC_BITS  = 12
-Q_ONE      = 1 << FRAC_BITS          # 4096  →  1.0 em Q4.12
-Q_MAX      = 0x7FFF                   # +7.999756...
-Q_MIN      = -0x8000                  # -8.0
+# ─── Constantes Q4.12 — espelham os localparam de pwl_activation.v ───────────
+POS_2    = 0x2000   # +2.0
+POS_1P5  = 0x1800   # +1.5
+POS_1    = 0x1000   # +1.0
+POS_0P5  = 0x0800   # +0.5
+POS_0P25 = 0x0400   # +0.25
 
-# Acumulador Q8.24 (32 bits com sinal)
-ACC_FRAC   = 24
-ACC_MAX    = (1 << 31) - 1
-ACC_MIN    = -(1 << 31)
+B2 = 0x0078         # +120/4096  ≈ +0.02936
+B3 = 0x0280         # +640/4096  = +0.15625
+B4 = 0x074A         # +1866/4096 ≈ +0.45557
+B5 = 0x0B77         # +2935/4096 ≈ +0.71680
 
-
-def to_q412(x: float) -> int:
-    """Converte float → Q4.12 com saturação."""
-    v = round(x * Q_ONE)
-    return max(Q_MIN, min(Q_MAX, v))
-
-
-def from_q412(v: int) -> float:
-    """Converte Q4.12 → float."""
-    # Interpreta como complemento de 2 de 16 bits
-    if v >= 0x8000:
-        v -= 0x10000
-    return v / Q_ONE
+Q_MAX =  32767      # 0x7FFF — teto positivo Q4.12
+Q_MIN = -32768      # 0x8000 — piso negativo Q4.12
 
 
-def q412_mac(acc32: int, a: int, b: int) -> int:
+# ─── Utilitários de conversão ─────────────────────────────────────────────────
+
+def to_s16(v):
+    """Força para inteiro signed 16-bit (complemento de 2)."""
+    v = int(v) & 0xFFFF
+    return v - 0x10000 if v >= 0x8000 else v
+
+def to_u16(v):
+    """Força para inteiro unsigned 16-bit (para escrita em hex)."""
+    return int(v) & 0xFFFF
+
+
+# ─── PWL — réplica exata de pwl_activation.v ─────────────────────────────────
+
+def pwl_q412(x_int):
     """
-    Acumula a × b no acumulador Q8.24.
-    a, b: Q4.12 com sinal (range: -0x8000 a 0x7FFF)
-    acc32: Q8.24 com sinal (32 bits)
-    Retorna novo acc32 saturado em [ACC_MIN, ACC_MAX].
+    Aproximação piecewise linear do tanh(x) em Q4.12.
+    Replica byte a byte a lógica combinacional de pwl_activation.v.
+
+    Passos:
+      1. Extrai sinal e calcula |x| com proteção contra -32768
+      2. Calcula todos os shifts (sem multiplicadores)
+      3. Seleciona segmento por breakpoints (mesmos >= do Verilog)
+      4. Aplica propriedade de função ímpar: f(-x) = -f(x)
+
+    Entrada/saída: inteiro signed 16-bit.
     """
-    # Interpreta como signed 16-bit
-    if a >= 0x8000: a -= 0x10000
-    if b >= 0x8000: b -= 0x10000
-    # Produto Q4.12 × Q4.12 = Q8.24
-    product = a * b                   # resultado exato (sem arredondamento)
-    acc32  += product
-    # Saturação 32 bits
-    return max(ACC_MIN, min(ACC_MAX, acc32))
+    x_int = to_s16(x_int)
+    x_neg = x_int < 0
 
+    # Proteção idêntica ao Verilog:
+    # abs(-32768) causaria overflow em 16-bit → forçar para +32767
+    x_abs = 32767 if x_int == Q_MIN else abs(x_int)
 
-def acc_to_q412(acc32: int) -> int:
-    """
-    Extrai Q4.12 do acumulador Q8.24: retorna acc32[27:12].
-    Equivale a (acc32 >> 12) com saturação para 16 bits.
+    # Shifts aritméticos sobre valor positivo
+    shr1 = x_abs >> 1
+    shr2 = x_abs >> 2
+    shr3 = x_abs >> 3
+    shr4 = x_abs >> 4
+    shr9 = x_abs >> 9
 
-    Overflow se bits [31:27] não são todos iguais (extensão de sinal).
-    """
-    # Verifica overflow: top 5 bits devem ser idênticos
-    top5 = (acc32 >> 27) & 0x1F
-    if acc32 >= 0:                    # positivo
-        if top5 != 0:                 # overflow
-            return Q_MAX
-    else:                             # negativo
-        if top5 != 0x1F:              # overflow
-            return Q_MIN
-
-    # Sem overflow: extrai bits [27:12]
-    shifted = acc32 >> FRAC_BITS      # Q8.12 → Q4.12 (descarta bits fracionários extras)
-    # Força para 16 bits signed
-    shifted &= 0xFFFF
-    return shifted
-
-
-# ============================================================
-#  Ativação PWL  (pwl_activation.v – mesmos breakpoints)
-#
-#  Segmentos (x em Q4.12):
-#    |x| < 2.0   →  y = (3/8)*x         (slope ≈ tanh'(0) = 1, approx)
-#    2.0 ≤ |x| < 4.0  →  y = (1/8)*x ± 0.5
-#    |x| ≥ 4.0   →  y = ±1.0
-#
-#  Implementados como bit-shifts (sem multiplicador):
-#    3/8*x  = (x>>2) + (x>>3)
-#    1/8*x  = (x>>3)
-#    0.5    = 0x0800
-#    1.0    = 0x1000
-# ============================================================
-BP2 = to_q412(2.0)    # 0x2000
-BP4 = to_q412(4.0)    # 0x4000
-HALF = 0x0800         # 0.5 em Q4.12
-ONE  = 0x1000         # 1.0 em Q4.12
-
-
-def pwl_activation(x_q: int) -> int:
-    """
-    Aplica a ativação PWL sobre valor Q4.12 (inteiro signed 16-bit).
-    Retorna valor Q4.12 (inteiro signed 16-bit).
-    Replica EXATAMENTE a lógica combinacional do pwl_activation.v.
-    """
-    # Converte para signed 16-bit (complemento de 2)
-    if x_q >= 0x8000:
-        x_q -= 0x10000
-
-    if x_q >= 0:
-        # Positivo
-        if x_q < BP2:
-            # slope 3/8: (x>>2) + (x>>3)
-            y = (x_q >> 2) + (x_q >> 3)
-        elif x_q < BP4:
-            # slope 1/8 + 0.5
-            y = (x_q >> 3) + HALF
-        else:
-            y = ONE
+    # Seleção de segmento — ordem idêntica ao assign y_pos do Verilog
+    if x_abs >= POS_2:
+        y_pos = POS_1                           # saturação: +1.0
+    elif x_abs >= POS_1P5:
+        y_pos = (shr3 + shr9 + B5) & 0xFFFF    # seg 5: slope ≈ 1/8
+    elif x_abs >= POS_1:
+        y_pos = (shr2 + shr4 + B4) & 0xFFFF    # seg 4: slope = 5/16
+    elif x_abs >= POS_0P5:
+        y_pos = (shr1 + shr3 + B3) & 0xFFFF    # seg 3: slope = 5/8
+    elif x_abs >= POS_0P25:
+        y_pos = (x_abs - shr3 + B2) & 0xFFFF   # seg 2: slope = 7/8
     else:
-        # Negativo (simetria ímpar)
-        ax = -x_q                     # magnitude (positiva)
-        if ax < BP2:
-            y = -((ax >> 2) + (ax >> 3))
-        elif ax < BP4:
-            y = -((ax >> 3) + HALF)
-        else:
-            y = -ONE
+        y_pos = x_abs                           # seg 1: identidade
 
-    # Converte de volta para unsigned 16-bit (complemento de 2)
-    return y & 0xFFFF
+    # Propriedade de função ímpar
+    return to_s16(-y_pos) if x_neg else y_pos
 
 
-# ============================================================
-#  Inferência ELM completa
-# ============================================================
-def elm_infer(pixels, weights, bias, beta,
-              n_input=784, n_hidden=128, n_output=10):
+# ─── MAC — réplica exata de mac_unit.v ───────────────────────────────────────
+
+def _mac_product(a, b):
     """
-    Executa inferência ELM em aritmética Q4.12 pura.
+    Multiplica dois valores Q4.12 signed e retorna o produto truncado Q4.12.
+    Replica a lógica produto + truncamento [27:12] + saturação do mac_unit.v.
+
+    Retorna: (produto_q4_12: int, overflow: bool)
+    """
+    product = int(a) * int(b)       # 32-bit signed Q8.24 (Python não limita)
+
+    # Representação como 32-bit unsigned para inspeção de bits
+    p32    = product & 0xFFFFFFFF
+    p_sign = (p32 >> 31) & 1        # bit de sinal
+    p_upper= (p32 >> 27) & 0x1F    # bits [31:27]
+
+    # Para caber em Q4.12 após truncamento, bits [31:27] devem ser todos iguais
+    # (extensão de sinal de bit[27]):
+    #   positivo → 5'b00000
+    #   negativo → 5'b11111
+    ovf_pos = (p_upper != 0x00) and (p_sign == 0)
+    ovf_neg = (p_upper != 0x1F) and (p_sign == 1)
+
+    if ovf_pos:
+        return Q_MAX, True
+    if ovf_neg:
+        return Q_MIN, True
+
+    # Truncamento: descarta os 12 bits fracionários inferiores
+    # equivale a product[27:12] no Verilog
+    return to_s16(product >> 12), False
+
+
+def _mac_loop(weights, inputs, bias=None):
+    """
+    Simula o mac_unit.v para uma sequência completa de multiplica-acumula.
+
+    weights, inputs: iteráveis de inteiros Q4.12 signed.
+    bias: se fornecido, é adicionado como bias * 1.0 (bias * 0x1000) ao final.
+          Replica o 'bias_cycle' da FSM na camada oculta.
+          None = camada de saída (sem bias).
+
+    Retorna: acumulador final Q4.12 (signed 16-bit).
+    """
+    acc = 0
+    saturated = False
+
+    # Monta lista de pares (w, x) — appende o bias como último par se existir
+    pairs = list(zip(weights, inputs))
+    if bias is not None:
+        pairs.append((int(bias), 0x1000))   # bias * +1.0 em Q4.12
+
+    for w, x in pairs:
+        if saturated:
+            break   # acumulador congelado — comportamento idêntico ao hardware
+
+        p_q, ovf = _mac_product(int(w), int(x))
+
+        if ovf:
+            acc = p_q
+            saturated = True
+            break
+
+        acc_next = acc + p_q
+
+        if acc_next > Q_MAX:
+            acc = Q_MAX
+            saturated = True
+        elif acc_next < Q_MIN:
+            acc = Q_MIN
+            saturated = True
+        else:
+            acc = acc_next
+
+    return acc
+
+
+# ─── Inferência ELM completa ──────────────────────────────────────────────────
+
+def run_inference(W_in_q, b_q, beta_q, pixels):
+    """
+    Executa a inferência ELM completa em aritmética Q4.12.
 
     Parâmetros:
-        pixels   – lista de n_input ints Q4.12 (unsigned hex)
-        weights  – lista de n_hidden*n_input ints Q4.12
-        bias     – lista de n_hidden ints Q4.12
-        beta     – lista de n_output*n_hidden ints Q4.12
+        W_in_q : (128, 784) int — pesos da camada oculta (Q4.12)
+        b_q    : (128,)     int — biases da camada oculta (Q4.12)
+        beta_q : (128, 10)  int — pesos da camada de saída (Q4.12)
+                                  layout: beta_q[neuron][class]
+        pixels : (784,)  uint8  — pixels da imagem (0..255)
 
     Retorna:
-        pred     – int (classe predita, 0..9)
-        h        – lista de n_hidden ints Q4.12
-        y        – lista de n_output ints Q4.12
+        z_hidden : (128,) int16 — pré-ativações da camada oculta
+        h        : (128,) int16 — ativações (pós-PWL)
+        z_output : (10,)  int16 — scores da camada de saída (linear)
+        pred     : int          — dígito predito (0..9)
     """
-    h = []
-    # ---- Camada oculta: h[i] = PWL( Σ W[i,j]·x[j] + b[i] ) ----
-    for i in range(n_hidden):
-        acc = 0
-        # Acumula pixeis
-        for j in range(n_input):
-            w_ij = weights[i * n_input + j]
-            acc  = q412_mac(acc, w_ij, pixels[j])
-        # Acumula bias (b * 1.0)
-        acc = q412_mac(acc, bias[i], ONE)
-        # Extrai Q4.12 e aplica PWL
-        h_i = pwl_activation(acc_to_q412(acc))
-        h.append(h_i)
+    N_NEURONS = W_in_q.shape[0]   # 128
+    N_CLASSES = beta_q.shape[1]   # 10
 
-    y = []
-    # ---- Camada de saída: y[c] = Σ β[c,k]·h[k] ----------------
-    for c in range(n_output):
-        acc = 0
-        for k in range(n_hidden):
-            b_ck = beta[c * n_hidden + k]
-            acc  = q412_mac(acc, b_ck, h[k])
-        y_c = acc_to_q412(acc)
-        y.append(y_c)
+    # ── Conversão pixel → Q4.12 ───────────────────────────────────────────
+    # pixel/255 ≈ pixel/256 = pixel << 4
+    # pixel=0   → 0x0000 (+0.000)
+    # pixel=128 → 0x0800 (+0.500)
+    # pixel=255 → 0x0FF0 (+0.996)
+    x_q = [int(p) << 4 for p in pixels]
 
-    # ---- Argmax -----------------------------------------------
-    pred = 0
-    max_val = y[0] if y[0] < 0x8000 else y[0] - 0x10000   # signed
-    for c in range(1, n_output):
-        val = y[c] if y[c] < 0x8000 else y[c] - 0x10000
-        if val > max_val:
-            max_val = val
-            pred    = c
+    # ── Camada Oculta: h[i] = PWL(W_in[i] · x + b[i]) ───────────────────
+    z_hidden = []
+    h        = []
 
-    return pred, h, y
+    for i in range(N_NEURONS):
+        z_i = _mac_loop(W_in_q[i], x_q, bias=b_q[i])
+        z_hidden.append(z_i)
+        h.append(pwl_q412(z_i))
 
+    # ── Camada de Saída: y[k] = beta[:, k] · h  (linear, sem bias) ───────
+    z_output = []
 
-# ============================================================
-#  Leitura de arquivos .hex
-# ============================================================
-def load_hex(path: str) -> list[int]:
-    values = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("//"):
-                values.append(int(line, 16))
-    return values
+    for k in range(N_CLASSES):
+        # beta_q[:, k]: os 128 pesos do neurônio de saída k
+        # addr no hex: neuron * 10 + k (confirmado em check_beta_hex.py)
+        y_k = _mac_loop(beta_q[:, k], h, bias=None)
+        z_output.append(y_k)
+
+    pred = int(np.argmax(z_output))
+
+    return (np.array(z_hidden, dtype=np.int16),
+            np.array(h,        dtype=np.int16),
+            np.array(z_output, dtype=np.int16),
+            pred)
 
 
-# ============================================================
-#  Validação contra vetor RTL (para uso no CI)
-# ============================================================
-def validate(pred_golden: int, h_golden: list[int], y_golden: list[int],
-             pred_rtl: int, h_rtl: list[int], y_rtl: list[int]) -> bool:
-    ok = True
+# ─── Escrita de arquivos HEX ──────────────────────────────────────────────────
 
-    if pred_golden != pred_rtl:
-        print(f"FAIL  pred: golden={pred_golden}  rtl={pred_rtl}", file=sys.stderr)
-        ok = False
-    else:
-        print(f"PASS  pred = {pred_golden}")
+def write_hex8(values, path):
+    """Escreve array de uint8 em hex (2 chars por linha)."""
+    with open(path, 'w') as f:
+        for v in values:
+            f.write(f"{int(v) & 0xFF:02X}\n")
 
-    for i, (g, r) in enumerate(zip(h_golden, h_rtl)):
-        if g != r:
-            print(f"FAIL  h[{i}]: golden=0x{g:04X}  rtl=0x{r:04X}", file=sys.stderr)
-            ok = False
-
-    for c, (g, r) in enumerate(zip(y_golden, y_rtl)):
-        if g != r:
-            print(f"FAIL  y[{c}]: golden=0x{g:04X}  rtl=0x{r:04X}", file=sys.stderr)
-            ok = False
-
-    return ok
+def write_hex16(values, path):
+    """Escreve array de int16 em hex (4 chars por linha, complemento de 2)."""
+    with open(path, 'w') as f:
+        for v in values:
+            f.write(f"{to_u16(v):04X}\n")
 
 
-# ============================================================
-#  CLI
-# ============================================================
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
 def main():
-    p = argparse.ArgumentParser(description="Modelo dourado ELM Q4.12")
-    p.add_argument("--pesos", required=True, help="rom_pesos.hex")
-    p.add_argument("--bias",  required=True, help="rom_bias.hex")
-    p.add_argument("--beta",  required=True, help="rom_beta.hex")
-    p.add_argument("--img",   required=True, help="ram_img.hex (uma imagem)")
-    p.add_argument("--ni",    type=int, default=784)
-    p.add_argument("--nh",    type=int, default=128)
-    p.add_argument("--no",    type=int, default=10)
-    p.add_argument("--json",  action="store_true", help="saída em JSON")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(
+        description='ELM golden model — inferência Q4.12 com PWL'
+    )
+    parser.add_argument('image',
+        help='Caminho para a imagem PNG (28x28, escala de cinza)')
+    parser.add_argument('--digit', type=int, default=-1,
+        help='Dígito esperado para validação (opcional)')
+    parser.add_argument('--model', default='model_elm_q.npz',
+        help='Arquivo do modelo .npz (default: model_elm_q.npz)')
+    parser.add_argument('--outdir', default='sim',
+        help='Diretório de saída dos arquivos HEX (default: sim/)')
+    args = parser.parse_args()
 
-    pixels  = load_hex(args.img)
-    weights = load_hex(args.pesos)
-    bias    = load_hex(args.bias)
-    beta    = load_hex(args.beta)
+    out = Path(args.outdir)
+    out.mkdir(parents=True, exist_ok=True)
 
-    pred, h, y = elm_infer(pixels, weights, bias, beta,
-                           args.ni, args.nh, args.no)
+    # ── Carregar modelo ────────────────────────────────────────────────────
+    data   = np.load(args.model)
+    W_in_q = data['W_in_q'].astype(np.int32)   # (128, 784)
+    b_q    = data['b_q'].astype(np.int32)      # (128,)
+    beta_q = data['beta_q'].astype(np.int32)   # (128, 10)
 
-    if args.json:
-        print(json.dumps({"pred": pred,
-                          "h": [f"0x{v:04X}" for v in h],
-                          "y": [f"0x{v:04X}" for v in y]}))
+    print(f"Modelo  : {args.model}")
+    print(f"  W_in  {W_in_q.shape}   range [{W_in_q.min():6d}, {W_in_q.max():6d}]")
+    print(f"  b     {b_q.shape}     range [{b_q.min():6d}, {b_q.max():6d}]")
+    print(f"  beta  {beta_q.shape}    range [{beta_q.min():6d}, {beta_q.max():6d}]")
+
+    # ── Carregar imagem ────────────────────────────────────────────────────
+    img    = Image.open(args.image).convert('L').resize((28, 28))
+    pixels = np.array(img, dtype=np.uint8).flatten()
+
+    print(f"\nImagem  : {args.image}")
+    print(f"  pixels min={pixels.min()}  max={pixels.max()}")
+
+    # ── Inferência Q4.12 ───────────────────────────────────────────────────
+    print("\nExecutando inferência Q4.12 + PWL...")
+    z_hidden, h, z_output, pred = run_inference(W_in_q, b_q, beta_q, pixels)
+
+    print(f"\n  z_hidden : [{z_hidden.min():6d}, {z_hidden.max():6d}]  "
+          f"(saturados: {(np.abs(z_hidden) >= 32767).sum()})")
+    print(f"  h        : [{h.min():6d}, {h.max():6d}]")
+    print(f"  z_output : {z_output.tolist()}")
+    print(f"\n  Predição : {pred}", end="")
+    if args.digit >= 0:
+        ok = "✓ CORRETO" if pred == args.digit else "✗ ERRADO"
+        print(f"  (esperado {args.digit} — {ok})")
     else:
-        print(f"Predição: {pred}")
-        print(f"y = {[f'0x{v:04X}' for v in y]}")
+        print()
+
+    # ── Validação cruzada com float ────────────────────────────────────────
+    # Roda o modelo float para verificar se Q4.12 converge para o mesmo pred
+    W_f  = W_in_q.astype(np.float64) / 4096.0
+    b_f  = b_q.astype(np.float64)    / 4096.0
+    beta_f = beta_q.astype(np.float64) / 4096.0
+    x_f  = pixels.astype(np.float64) / 255.0
+
+    h_f   = np.tanh(W_f @ x_f + b_f)
+    y_f   = beta_f.T @ h_f
+    pred_f = int(np.argmax(y_f))
+
+    match = "✓ concordam" if pred == pred_f else "✗ divergem"
+    print(f"\n  Float ref: {pred_f}  ←→  Q4.12: {pred}  {match}")
+    if pred != pred_f:
+        print("  ATENÇÃO: divergência entre float e Q4.12.")
+        print("  Verifique se a imagem é uma amostra difícil ou se há bug.")
+
+    # ── Gerar arquivos HEX ─────────────────────────────────────────────────
+    write_hex8( pixels,   out / 'img_test.hex')
+    write_hex16(z_hidden, out / 'z_hidden.hex')
+    write_hex16(h,        out / 'h_ref.hex')
+    write_hex16(z_output, out / 'z_output.hex')
+
+    with open(out / 'pred_ref.hex', 'w') as f:
+        f.write(f"{pred:01X}\n")
+
+    print(f"\nArquivos gerados em '{out.resolve()}':")
+    print(f"  img_test.hex   — {len(pixels)} pixels (8-bit por linha)")
+    print(f"  z_hidden.hex   — 128 pré-ativações (Q4.12, 16-bit)")
+    print(f"  h_ref.hex      — 128 ativações PWL  (Q4.12, 16-bit)")
+    print(f"  z_output.hex   — 10  scores de saída (Q4.12, 16-bit)")
+    print(f"  pred_ref.hex   — predição: {pred}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -19,7 +19,7 @@ Por serem parâmetros fixos do modelo treinado, os pesos β são armazenados em 
 **Características Principais da Arquitetura:**
 
 * **Tipo:** ROM síncrona de porta única (*single-port synchronous ROM*), 1.280 posições × 16 bits.
-* **Endereçamento composto (11 bits):** `addr = {class_idx[3:0], hidden_idx[6:0]}`, equivalente a `class_idx × 128 + hidden_idx`.
+* **Endereçamento composto (11 bits):** `addr = hidden_idx × 10 + class_idx`, equivalente a `class_idx × 128 + hidden_idx`.
 * **Inicialização:** Via diretiva `$readmemh("beta.hex", mem)` com os pesos reais do modelo treinado.
 * **Profundidade declarada:** 1.280 entradas (exata) — não há endereços desperdiçados, ao contrário da rom\_pesos que usa profundidade padded.
 
