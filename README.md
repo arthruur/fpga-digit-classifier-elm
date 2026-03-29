@@ -132,14 +132,15 @@ fpga-digit-classifier-elm/
 │   │   ├── tb_pwl_activation.v
 │   │   ├── tb_argmax_block.v
 │   │   └── tb_datapath.v
-│   └── memory/
-│       ├── ram_img.v            # BRAM de imagem (modo behavioral e altsyncram)
-│       ├── rom_pesos.v
-│       ├── rom_bias.v
-│       ├── rom_beta.v
-│       ├── ram_hidden.v
-│       ├── mif/                 # HEX de inicialização para simulação
-│       └── tb_ram_*.v / tb_rom_*.v
+│   ├── memory/
+│   │   ├── ram_img.v            # BRAM de imagem (modo behavioral e altsyncram)
+│   │   ├── rom_pesos.v
+│   │   ├── rom_bias.v
+│   │   ├── rom_beta.v
+│   │   ├── ram_hidden.v
+│   │   └── tb_ram_*.v / tb_rom_*.v
+│   └── tb/
+│       └── tb_elm_accel.v
 ├── model/
 │   ├── model_elm_q.npz          # Pesos treinados em Q4.12
 │   ├── elm_golden.py            # Golden model Python (suporta --branca / --preta)
@@ -148,25 +149,22 @@ fpga-digit-classifier-elm/
 │   ├── gen_all_digits.py        # Gera digit_0.hex .. digit_9.hex para o top_demo
 │   ├── diagnose_normalization.py
 │   └── test/                    # Imagens MNIST por dígito (0..9)
-├── sim/                         # Gerado pelos scripts Python (não rastreado pelo git)
+├── sim/                         # Arquivos HEX e binários de simulação
 │   ├── w_in.hex / w_in.mif
 │   ├── bias.hex / bias.mif
 │   ├── beta.hex / beta.mif
 │   ├── img_test.hex
 │   ├── pred_ref.hex
 │   └── digit_0.hex .. digit_9.hex   # Imagens para o top_demo
-├── quartus/                     # Projeto Quartus (síntese e bitstream)
+├── quartus/                     # Projeto Quartus
 │   ├── elm_accel.qpf
 │   ├── elm_accel.qsf            # Top-level: top_demo; pin assignments incluídos
-│   ├── elm_accel.sdc            # Constraint de clock: CLOCK_50 @ 50 MHz
-│   ├── elm_accel.sof            # Bitstream compilado
-│   ├── *.hex                    # HEX de inicialização das ROMs/RAMs
-│   └── output_files/            # Relatórios de síntese (gerado, não rastreado)
+│   └── elm_accel.sdc            # Constraint de clock: CLOCK_50 @ 50 MHz
 └── docs/
     ├── top_level/
-    │   ├── elm_accel.md         # Co-processador ELM (top-level MMIO)
-    │   ├── pixel_path.md        # Fluxo de um pixel pelo sistema
-    │   └── top_demo.md          # Interface física standalone (DE1-SoC)
+    │   ├── overview.md
+    │   ├── pixel_path.md
+    │   └── top_demo.md          # Documentação do módulo top_demo
     ├── datapath/
     ├── memory/
     ├── fsm_regbank/

@@ -128,76 +128,63 @@ module reg_bank (
     end
 
     // =========================================================================
-    // Lógica de LEITURA — registrador de pipeline na saída (Marco 2)
+    // Lógica de LEITURA — monta data_out com base no endereço
     //
-    // Motivação: a versão combinacional (always @(*)) produzia um caminho
-    // crítico de ~30 ns (addr → data_out), estourando o período de 20 ns
-    // a 50 MHz e causando slack de −10,74 ns.
+    // Esta é lógica COMBINACIONAL (always @(*)):
+    // data_out é atualizado imediatamente quando addr ou read_en mudam,
+    // sem esperar o clock.
     //
-    // Solução: converter para lógica SÍNCRONA. data_out é capturado no
-    // posedge do clock seguinte ao ciclo em que read_en=1 e addr são
-    // apresentados. Isso quebra o caminho crítico em dois segmentos:
-    //   Ciclo N  : addr + read_en chegam → lógica combinacional resolve
-    //   Ciclo N+1: data_out registrado fica estável para o AXI bridge
-    //
-    // Impacto no software (infer.c): nenhum. O polling em C é muito mais
-    // lento que 1 ciclo de clock — a latência extra é imperceptível.
-    //
-    // Impacto no testbench (tb_reg_bank.v): checks de leitura devem
-    // amostrar data_out 1 ciclo após a borda em que read_en é ativado.
+    // Por que combinacional e não síncrona?
+    // O ARM precisa do dado no mesmo ciclo em que apresenta o endereço
+    // para leitura. Uma BRAM síncrona adicionaria 1 ciclo de latência
+    // desnecessário para registradores simples como esses.
     // =========================================================================
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            data_out <= 32'h00000000;
+    always @(*) begin
+        if (read_en) begin
+            case (addr)
+
+                32'h04: begin
+                    // ---------------------------------------------------------
+                    // STATUS — estado atual da FSM + predição
+                    //
+                    // bits[1:0] = status_in  (IDLE/BUSY/DONE/ERROR)
+                    // bits[5:2] = pred_in    (dígito 0..9 durante DONE)
+                    // bits[31:6] = 0
+                    //
+                    // O ARM faz polling aqui até ver 2'b10 (DONE)
+                    // ---------------------------------------------------------
+                    data_out = {26'b0, pred_in, status_in};
+                end
+
+                32'h0C: begin
+                    // ---------------------------------------------------------
+                    // RESULT — dígito previsto
+                    //
+                    // bits[3:0] = pred_in (0..9)
+                    // bits[31:4] = 0
+                    // ---------------------------------------------------------
+                    data_out = {28'b0, pred_in};
+                end
+
+                32'h10: begin
+                    // ---------------------------------------------------------
+                    // CYCLES — contador de ciclos de clock
+                    //
+                    // Valor inteiro de 32 bits — latência em ciclos.
+                    // Congelado quando FSM chega em DONE.
+                    // ---------------------------------------------------------
+                    data_out = cycles_in;
+                end
+
+                // Endereço não mapeado: retorna zero (comportamento seguro)
+                default: begin
+                    data_out = 32'h00000000;
+                end
+
+            endcase
         end else begin
-            if (read_en) begin
-                case (addr)
-
-                    32'h04: begin
-                        // ---------------------------------------------------------
-                        // STATUS — estado atual da FSM + predição
-                        //
-                        // bits[1:0] = status_in  (IDLE/BUSY/DONE/ERROR)
-                        // bits[5:2] = pred_in    (dígito 0..9 durante DONE)
-                        // bits[31:6] = 0
-                        //
-                        // O ARM faz polling aqui até ver 2'b10 (DONE)
-                        // ---------------------------------------------------------
-                        data_out <= {26'b0, pred_in, status_in};
-                    end
-
-                    32'h0C: begin
-                        // ---------------------------------------------------------
-                        // RESULT — dígito previsto
-                        //
-                        // bits[3:0] = pred_in (0..9)
-                        // bits[31:4] = 0
-                        // ---------------------------------------------------------
-                        data_out <= {28'b0, pred_in};
-                    end
-
-                    32'h10: begin
-                        // ---------------------------------------------------------
-                        // CYCLES — contador de ciclos de clock
-                        //
-                        // Valor inteiro de 32 bits — latência em ciclos.
-                        // Congelado quando FSM chega em DONE.
-                        // ---------------------------------------------------------
-                        data_out <= cycles_in;
-                    end
-
-                    // Endereço não mapeado: retorna zero (comportamento seguro)
-                    default: begin
-                        data_out <= 32'h00000000;
-                    end
-
-                endcase
-            end else begin
-                // read_en=0: mantém o último valor lido (hold)
-                // O AXI bridge não amostra data_out quando read_en=0,
-                // portanto manter ou zerar são equivalentes funcionalmente.
-                data_out <= 32'h00000000;
-            end
+            // read_en=0: barramento de leitura em alta impedância (zero)
+            data_out = 32'h00000000;
         end
     end
 
