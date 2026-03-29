@@ -132,15 +132,14 @@ fpga-digit-classifier-elm/
 │   │   ├── tb_pwl_activation.v
 │   │   ├── tb_argmax_block.v
 │   │   └── tb_datapath.v
-│   ├── memory/
-│   │   ├── ram_img.v            # BRAM de imagem (modo behavioral e altsyncram)
-│   │   ├── rom_pesos.v
-│   │   ├── rom_bias.v
-│   │   ├── rom_beta.v
-│   │   ├── ram_hidden.v
-│   │   └── tb_ram_*.v / tb_rom_*.v
-│   └── tb/
-│       └── tb_elm_accel.v
+│   └── memory/
+│       ├── ram_img.v            # BRAM de imagem (modo behavioral e altsyncram)
+│       ├── rom_pesos.v
+│       ├── rom_bias.v
+│       ├── rom_beta.v
+│       ├── ram_hidden.v
+│       ├── mif/                 # HEX de inicialização para simulação
+│       └── tb_ram_*.v / tb_rom_*.v
 ├── model/
 │   ├── model_elm_q.npz          # Pesos treinados em Q4.12
 │   ├── elm_golden.py            # Golden model Python (suporta --branca / --preta)
@@ -149,22 +148,25 @@ fpga-digit-classifier-elm/
 │   ├── gen_all_digits.py        # Gera digit_0.hex .. digit_9.hex para o top_demo
 │   ├── diagnose_normalization.py
 │   └── test/                    # Imagens MNIST por dígito (0..9)
-├── sim/                         # Arquivos HEX e binários de simulação
+├── sim/                         # Gerado pelos scripts Python (não rastreado pelo git)
 │   ├── w_in.hex / w_in.mif
 │   ├── bias.hex / bias.mif
 │   ├── beta.hex / beta.mif
 │   ├── img_test.hex
 │   ├── pred_ref.hex
 │   └── digit_0.hex .. digit_9.hex   # Imagens para o top_demo
-├── quartus/                     # Projeto Quartus
+├── quartus/                     # Projeto Quartus (síntese e bitstream)
 │   ├── elm_accel.qpf
 │   ├── elm_accel.qsf            # Top-level: top_demo; pin assignments incluídos
-│   └── elm_accel.sdc            # Constraint de clock: CLOCK_50 @ 50 MHz
+│   ├── elm_accel.sdc            # Constraint de clock: CLOCK_50 @ 50 MHz
+│   ├── elm_accel.sof            # Bitstream compilado
+│   ├── *.hex                    # HEX de inicialização das ROMs/RAMs
+│   └── output_files/            # Relatórios de síntese (gerado, não rastreado)
 └── docs/
     ├── top_level/
-    │   ├── overview.md
-    │   ├── pixel_path.md
-    │   └── top_demo.md          # Documentação do módulo top_demo
+    │   ├── elm_accel.md         # Co-processador ELM (top-level MMIO)
+    │   ├── pixel_path.md        # Fluxo de um pixel pelo sistema
+    │   └── top_demo.md          # Interface física standalone (DE1-SoC)
     ├── datapath/
     ├── memory/
     ├── fsm_regbank/

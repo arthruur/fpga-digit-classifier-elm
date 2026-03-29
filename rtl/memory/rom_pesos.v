@@ -61,8 +61,9 @@ module rom_pesos (
     // Posições não preenchidas ficam como 16'bx em simulação —
     // o arquivo w_in.hex já inclui zeros nas posições de padding.
     // -------------------------------------------------------------------------
-    initial $readmemh("w_in.hex", mem);
-
+	`ifndef SYNTHESIS
+		 initial $readmemh("w_in.hex", mem);
+	`endif
     // -------------------------------------------------------------------------
     // Lógica de leitura — bloco síncrono
     //

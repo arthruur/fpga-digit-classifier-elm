@@ -48,7 +48,9 @@ module rom_beta (
     //   linha 128  → β[1][0]
     //   linha 1279 → β[9][127]
     // -------------------------------------------------------------------------
-    initial $readmemh("beta.hex", mem);
+	`ifndef SYNTHESIS
+		 initial $readmemh("beta.hex", mem);
+	`endif
 
     // -------------------------------------------------------------------------
     // Lógica de leitura — bloco síncrono, latência de 1 ciclo.
