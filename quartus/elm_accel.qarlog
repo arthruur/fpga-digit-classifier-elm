@@ -1,0 +1,40 @@
+Quartus Prime Archive log --	/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/elm_accel.qarlog
+
+Archive:	/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/elm_accel.qar
+Date:		Thu Mar 26 10:36:39 2026
+Quartus Prime		23.1std.0 Build 991 11/28/2023 SC Lite Edition
+
+	=========== Files Selected: ===========
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/argmax_block.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/assignment_defaults.qdf
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/beta.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/bias.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_0.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_1.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_2.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_3.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_4.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_5.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_6.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_7.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_8.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/digit_9.hex
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/elm_accel.qpf
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/elm_accel.qsf
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/elm_accel.sdc
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/elm_accel.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/fsm_ctrl.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/mac_unit.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/pwl_activation.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/ram_hidden.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/ram_img.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/reg_bank.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/rom_beta.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/rom_bias.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/rom_pesos.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/top_demo.v
+/home/aluno/Downloads/fpga-digit-classifier-elm-pbl_pronto/elm_accel_restored/w_in.hex
+	======= Total: 29 files to archive =======
+
+	================ Status: ===============
+All files archived successfully.
