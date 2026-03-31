@@ -11,7 +11,7 @@
 O módulo rom\_beta.v armazena os pesos `β` da camada de saída da rede ELM. Estes pesos são os únicos parâmetros *aprendidos* durante o treinamento da ELM e determinam diretamente a predição final. Para cada uma das 10 classes de dígitos (0 a 9), existem 128 pesos — um para cada neurônio oculto — totalizando 1.280 valores de 16 bits:
 
 ```
-y[c] = sigmoid(β[c] · h)  =  sigmoid( Σ β[c][i] · h[i] )  para i = 0..127
+y[c] = β[c] · h  = Σ β[c][i] · h[i]  para i = 0..127
 ```
 
 Por serem parâmetros fixos do modelo treinado, os pesos β são armazenados em ROM inicializada em síntese — nunca modificados em tempo de execução.
