@@ -47,13 +47,25 @@ Durante a multiplicação de dois valores altos (ex: 7FFF \* 7FFF), o resultado 
 
 Para mitigar isso, o circuito avalia os bits superiores (\[31:27\]) do produto bruto através de portas lógicas (comparadores Equal). Se esses bits não forem todos iguais ao bit de sinal da operação, um multiplexador desvia o fluxo de dados e força o valor máximo permitido (16'h7FFF para positivo ou 16'h8000 para negativo), atuando como uma barreira de saturação (*clamp*) antes mesmo da acumulação.
 
-### **2.3. Acumulação e Controle (Registradores)**
+### **2.3. Detecção de Overflow do Acumulador (Correção v2)**
+
+Além da saturação do produto individual (seção 2.2), existe uma verificação independente sobre o resultado da acumulação (`acc_next`). As duas verificações são distintas e podem ser acionadas em momentos diferentes:
+
+- **Overflow de produto:** ocorre quando um único `a × b` já excede o range Q4.12. Detectado nos bits `[31:27]` do produto bruto de 32 bits.
+- **Overflow de acumulador:** ocorre quando a soma acumulada ultrapassa o range, mesmo que cada produto individual seja válido. Detectado nos bits `[31:15]` de `acc_next`.
+
+A verificação do acumulador usa o range `[31:15]` porque `acc_internal` armazena valores Q4.12 sign-extendidos em 32 bits. Para que `acc_next[15:0]` seja um Q4.12 válido, os bits `[31:15]` devem ser todos iguais — extensão de sinal uniforme. Se não forem, houve overflow.
+
+> **Correção aplicada (v2):** a versão inicial verificava apenas `[31:28]`, o que só detectava overflows acima de 2²⁸ (~268 milhões). Valores acumulados entre 32.768 e 268 milhões passavam sem saturar, produzindo wrap-around silencioso no `acc_out`. A correção para `[31:15]` elimina essa janela cega.
+
+### **2.4. Acumulação e Controle (Registradores)**
 
 A lógica de acúmulo é regida por um bloco sequencial síncrono com o clock:
 
 * **acc\_next (Calculadora Combinacional):** Um somador puro que soma o valor armazenado no acumulador com o produto truncado/saturado recém-chegado.  
 * **mac\_en (Habilitação):** Controla a teia de multiplexadores (Muxes) de realimentação. Se estiver em nível baixo, o registrador realimenta seu próprio valor (mantém estado).  
-* **mac\_clr (Clear Síncrono):** Sinal gerado pela Máquina de Estados (FSM) para zerar a MAC entre os cálculos de diferentes neurônios. Ele age de forma **síncrona**, ou seja, zera o registrador apenas na borda de subida do clock, garantindo imunidade a *glitches* transientes da lógica de controle combinacional.
+* **mac\_clr (Clear Síncrono):** Sinal gerado pela Máquina de Estados (FSM) para zerar a MAC entre os cálculos de diferentes neurônios. Ele age de forma **síncrona**, ou seja, zera o registrador apenas na borda de subida do clock, garantindo imunidade a *glitches* transientes da lógica de controle combinacional. O `mac_clr` também limpa o flag `is_saturated` (ver abaixo).
+* **is\_saturated (Travamento Pós-Saturação):** Flag interna que indica que o acumulador atingiu um limite de saturação em algum ciclo anterior. Uma vez setada, a MAC congela `acc_internal` e `acc_out` no valor saturado (`0x7FFF` ou `0x8000`) pelos ciclos seguintes, ignorando novas acumulações. O flag `overflow` desce para 0 após o primeiro ciclo de saturação — ele é um pulso de 1 ciclo, não um nível permanente. O estado é encerrado apenas quando `mac_clr=1` ou `rst_n=0`, que limpam `is_saturated` e zeram o acumulador.
 
 ## **3\. Metodologia de Validação e Testbench (tb\_mac.v)**
 
