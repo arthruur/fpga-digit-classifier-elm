@@ -75,7 +75,7 @@ Esse layout garante que a diretiva `$readmemh("w_in.hex", mem)` inicializa corre
 
 ### **3.2. Acesso durante HIDDEN\_LAYER**
 
-Durante `HIDDEN_LAYER`, a FSM itera sobre os 128 neurônios. Para cada neurônio `n`, itera-se sobre os 784 pixels `p`, gerando o endereço `{n[6:0], p[9:0]}` a cada ciclo. A MAC acumula `W_in[n][p] × x[p]` para todos os 784 pixels e ao final soma o bias `b[n]`. O loop completo da camada oculta realiza `128 × 784 = 100.352` leituras desta ROM.
+Durante `CALC_HIDDEN`, a FSM itera sobre os 128 neurônios. Para cada neurônio `n`, itera-se sobre os 784 pixels `p`, gerando o endereço `{n[6:0], p[9:0]}` a cada ciclo. A MAC acumula `W_in[n][p] × x[p]` para todos os 784 pixels e ao final soma o bias `b[n]`. O loop completo da camada oculta realiza `128 × 784 = 100.352` leituras desta ROM.
 
 ### **3.3. Latência e Pipeline**
 
@@ -99,4 +99,4 @@ O testbench valida o módulo com os pesos reais do professor, cobrindo explicita
 
 ## **5\. Conclusão da Fase**
 
-Os 6 casos de teste resultaram em PASS durante a simulação RTL com os pesos reais fornecidos, incluindo os testes de endereços altos (TC-WGT-03 e TC-WGT-04) que validam a correção da profundidade padded. A rom\_pesos demonstrou inicialização correta do layout padded via `$readmemh`, endereçamento por concatenação sem lógica adicional e cobertura completa dos 100.352 pesos de `W_in`, estando apta para integração no estado `HIDDEN_LAYER` do elm\_accel.
+Os 6 casos de teste resultaram em PASS durante a simulação RTL com os pesos reais fornecidos, incluindo os testes de endereços altos (TC-WGT-03 e TC-WGT-04) que validam a correção da profundidade padded. A rom\_pesos demonstrou inicialização correta do layout padded via `$readmemh`, endereçamento por concatenação sem lógica adicional e cobertura completa dos 100.352 pesos de `W_in`, estando apta para integração no estado `CALC_HIDDEN` do elm\_accel.
