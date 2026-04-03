@@ -35,8 +35,9 @@ module rom_bias (
     //   linha 0   → b[0]   = bias do neurônio 0
     //   linha 127 → b[127] = bias do neurônio 127
     // -------------------------------------------------------------------------
-    initial $readmemh("bias.hex", mem);
-
+	`ifndef SYNTHESIS
+		 initial $readmemh("bias.hex", mem);
+	`endif
     // -------------------------------------------------------------------------
     // Lógica de leitura — bloco síncrono, latência de 1 ciclo.
     // -------------------------------------------------------------------------

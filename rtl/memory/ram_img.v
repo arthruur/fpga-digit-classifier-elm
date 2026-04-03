@@ -6,7 +6,12 @@
 // Referência: test_spec_memories.md — Módulo 1 (TC-IMG-01 a TC-IMG-06)
 // =============================================================================
 
-module ram_img (
+module ram_img #(
+    // Arquivo HEX para pré-carregar a imagem no bitstream.
+    // Deixe "" (vazio) para o comportamento original (escrita via MMIO).
+    // No modo demo, passe o caminho do img_test.hex gerado pelo golden model.
+    parameter INIT_FILE = "img_test.hex"
+)(
     input            clk,       // clock
     input            we,        // write enable: 1 = escreve, 0 = só lê
     input      [9:0] addr,      // endereço: 0 a 783 (10 bits)
@@ -16,16 +21,20 @@ module ram_img (
 
     // -------------------------------------------------------------------------
     // Declaração da memória
-    //
-    // Sintaxe: reg [largura_do_dado - 1 : 0] nome [quantidade_de_posicoes - 1 : 0]
-    //
-    // [7:0]  → cada posição guarda 8 bits (1 byte = 1 pixel em escala de cinza)
-    // [783:0] → 784 posições no total (pixels de 0 a 783)
-    //
-    // O Quartus reconhece esse padrão e sintetiza automaticamente como BRAM,
-    // em vez de usar flip-flops. Isso economiza muito recurso na FPGA.
     // -------------------------------------------------------------------------
     reg [7:0] mem [783:0];
+
+    // -------------------------------------------------------------------------
+    // Inicialização opcional com arquivo HEX (modo demo / standalone).
+    // O Quartus usa $readmemh no bloco initial para inicializar M10K com
+    // o conteúdo do arquivo — equivalente ao parâmetro INIT_FILE de altsyncram.
+    // Quando INIT_FILE = "", o initial não é executado e a RAM começa em X
+    // (comportamento original: pixels chegam via MMIO antes do START).
+    // -------------------------------------------------------------------------
+    initial begin
+        if (INIT_FILE != "")
+            $readmemh(INIT_FILE, mem);
+    end
 
     // -------------------------------------------------------------------------
     // Lógica de leitura e escrita — bloco síncrono
