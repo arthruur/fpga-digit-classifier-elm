@@ -58,7 +58,7 @@ O arquivo `bias.hex` é gerado pelo script `scripts/gen_hex.py` a partir do arqu
 
 A rom\_bias é a única ROM do projeto com endereçamento de 1 dimensão. O endereço `addr` é diretamente o índice do neurônio, sem necessidade de composição de campos (`{campo_A, campo_B}`). Isso elimina qualquer risco de erro de mapeamento de endereço — a posição 0 contém sempre `b[0]`, a posição 127 contém sempre `b[127]`.
 
-A FSM acessa a rom\_bias em paralelo com a rom\_pesos durante o estado `HIDDEN_LAYER`: ambas recebem o mesmo `neuron_idx` e retornam seus dados respectivos no ciclo seguinte. A MAC então acumula `W_in[i][j] · x[j]` para todos os pixels `j` e, ao final do neurônio, soma `b[i]` lido da rom\_bias.
+A FSM acessa a rom\_bias em paralelo com a rom\_pesos durante o estado `CALC_HIDDEN`: ambas recebem o mesmo `neuron_idx` e retornam seus dados respectivos no ciclo seguinte. A MAC então acumula `W_in[i][j] · x[j]` para todos os pixels `j` e, ao final do neurônio, soma `b[i]` lido da rom\_bias.
 
 ### **3.3. Latência de Leitura**
 

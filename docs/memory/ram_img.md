@@ -39,7 +39,7 @@ O padrão sintetizável reconhecido pelo Quartus para inferência de BRAM exige 
 
 ### **3.1. Escrita Condicional (Write Enable)**
 
-O sinal `we` atua como um guardião da memória. Durante o estado `LOAD` da FSM, `we` é ativado para que o driver (Marco 2) possa transferir os 784 pixels byte a byte. Nos demais estados (`HIDDEN_LAYER`, `OUTPUT_LAYER`, `ARGMAX`), `we` permanece em `0`, tornando a ram\_img efetivamente somente leitura — o datapath pode ler pixels quantas vezes precisar sem risco de corrupção.
+O sinal `we` atua como um guardião da memória. Durante o estado `LOAD_IMG` da FSM, `we` é ativado para que o driver (Marco 2) possa transferir os 784 pixels byte a byte. Nos demais estados (`CALC_HIDDEN`, `CALC_OUTPUT`, `ARGMAX`), `we` permanece em `0`, tornando a ram\_img efetivamente somente leitura — o datapath pode ler pixels quantas vezes precisar sem risco de corrupção.
 
 Essa separação entre fase de carga e fase de leitura é uma decisão arquitetural deliberada: a porta única da BRAM é compartilhada no tempo entre escrita (via driver) e leitura (via MAC), cabendo à FSM garantir que nunca ocorram simultaneamente.
 
@@ -68,7 +68,7 @@ O testbench foi projetado para cobrir os comportamentos funcionais críticos do 
 
 * **TC-IMG-04 — Latência de leitura é exatamente 1 ciclo:** *Justificativa:* Documenta explicitamente o comportamento síncrono. O dado não está disponível no mesmo ciclo em que o endereço é apresentado. Se a FSM ignorar esse ciclo de latência, lerá o pixel errado (o do endereço anterior).
 
-* **TC-IMG-05 — Escrita sequencial de 784 pixels e verificação por amostragem:** *Justificativa:* Simula a operação real do estado `LOAD`. Carrega toda a imagem com o padrão `data_in = addr[7:0]` (verificável matematicamente) e valida 5 posições representativas: início (0), quartil (100), meio (391), três quartos (500) e fim (783).
+* **TC-IMG-05 — Escrita sequencial de 784 pixels e verificação por amostragem:** *Justificativa:* Simula a operação real do estado `LOAD_IMG`. Carrega toda a imagem com o padrão `data_in = addr[7:0]` (verificável matematicamente) e valida 5 posições representativas: início (0), quartil (100), meio (391), três quartos (500) e fim (783).
 
 * **TC-IMG-06 — Sobrescrita entre inferências:** *Justificativa:* Garante que a segunda inferência não herda pixels da primeira. Uma nova imagem deve poder sobrescrever completamente a anterior sem resíduos.
 

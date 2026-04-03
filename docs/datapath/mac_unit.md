@@ -47,30 +47,58 @@ Durante a multiplicação de dois valores altos (ex: 7FFF \* 7FFF), o resultado 
 
 Para mitigar isso, o circuito avalia os bits superiores (\[31:27\]) do produto bruto através de portas lógicas (comparadores Equal). Se esses bits não forem todos iguais ao bit de sinal da operação, um multiplexador desvia o fluxo de dados e força o valor máximo permitido (16'h7FFF para positivo ou 16'h8000 para negativo), atuando como uma barreira de saturação (*clamp*) antes mesmo da acumulação.
 
-### **2.3. Acumulação e Controle (Registradores)**
+### **2.3. Detecção de Overflow do Acumulador (Correção v2)**
+
+Além da saturação do produto individual (seção 2.2), existe uma verificação independente sobre o resultado da acumulação (`acc_next`). As duas verificações são distintas e podem ser acionadas em momentos diferentes:
+
+- **Overflow de produto:** ocorre quando um único `a × b` já excede o range Q4.12. Detectado nos bits `[31:27]` do produto bruto de 32 bits.
+- **Overflow de acumulador:** ocorre quando a soma acumulada ultrapassa o range, mesmo que cada produto individual seja válido. Detectado nos bits `[31:15]` de `acc_next`.
+
+A verificação do acumulador usa o range `[31:15]` porque `acc_internal` armazena valores Q4.12 sign-extendidos em 32 bits. Para que `acc_next[15:0]` seja um Q4.12 válido, os bits `[31:15]` devem ser todos iguais — extensão de sinal uniforme. Se não forem, houve overflow.
+
+> **Correção aplicada (v2):** a versão inicial verificava apenas `[31:28]`, o que só detectava overflows acima de 2²⁸ (~268 milhões). Valores acumulados entre 32.768 e 268 milhões passavam sem saturar, produzindo wrap-around silencioso no `acc_out`. A correção para `[31:15]` elimina essa janela cega.
+
+### **2.4. Acumulação e Controle (Registradores)**
 
 A lógica de acúmulo é regida por um bloco sequencial síncrono com o clock:
 
 * **acc\_next (Calculadora Combinacional):** Um somador puro que soma o valor armazenado no acumulador com o produto truncado/saturado recém-chegado.  
 * **mac\_en (Habilitação):** Controla a teia de multiplexadores (Muxes) de realimentação. Se estiver em nível baixo, o registrador realimenta seu próprio valor (mantém estado).  
-* **mac\_clr (Clear Síncrono):** Sinal gerado pela Máquina de Estados (FSM) para zerar a MAC entre os cálculos de diferentes neurônios. Ele age de forma **síncrona**, ou seja, zera o registrador apenas na borda de subida do clock, garantindo imunidade a *glitches* transientes da lógica de controle combinacional.
+* **mac\_clr (Clear Síncrono):** Sinal gerado pela Máquina de Estados (FSM) para zerar a MAC entre os cálculos de diferentes neurônios. Ele age de forma **síncrona**, ou seja, zera o registrador apenas na borda de subida do clock, garantindo imunidade a *glitches* transientes da lógica de controle combinacional. O `mac_clr` também limpa o flag `is_saturated` (ver abaixo).
+* **is\_saturated (Travamento Pós-Saturação):** Flag interna que indica que o acumulador atingiu um limite de saturação em algum ciclo anterior. Uma vez setada, a MAC congela `acc_internal` e `acc_out` no valor saturado (`0x7FFF` ou `0x8000`) pelos ciclos seguintes, ignorando novas acumulações. O flag `overflow` desce para 0 após o primeiro ciclo de saturação — ele é um pulso de 1 ciclo, não um nível permanente. O estado é encerrado apenas quando `mac_clr=1` ou `rst_n=0`, que limpam `is_saturated` e zeram o acumulador.
 
 ## **3\. Metodologia de Validação e Testbench (tb\_mac.v)**
 
-Para garantir a confiabilidade do bloco antes da integração com a FSM, foi desenvolvido um testbench exaustivo simulando o comportamento via **Icarus Verilog**. O plano de testes cobre as operações normais, os casos extremos (limites numéricos) e os sinais de controle essenciais.
+Para garantir a confiabilidade do bloco antes da integração com a FSM, foi desenvolvido um testbench exaustivo com **14 casos de teste** simulados via **Icarus Verilog**. O plano cobre operações normais, casos extremos numéricos, sinais de controle e o comportamento de travamento pós-saturação.
 
-Abaixo, a justificativa para cada caso de teste abordado:
+* **TC-MAC-01 — Reset limpa o acumulador:** *Justificativa:* Teste de sanidade inicial. Confirma que após `rst_n=0`, `acc_out` e `overflow` retornam a zero, garantindo que nenhuma inferência comece com estado residual.
 
-* **TC01 — Operação Nula (0 × 0 \= 0):** *Justificativa:* Teste base de sanidade. Garante que multiplicações por zero não gerem ruído e que o acumulador inicie e opere de forma neutra.  
-* **TC02 — Limite Operacional Positivo (Máximo Q4.12 × 1.0):** *Justificativa:* Verifica se o multiplicador e o truncamento \[27:12\] conseguem lidar com os valores máximos nominais permitidos pela régua Q4.12 sem acionar falsos positivos na lógica de overflow.  
-* **TC03 e TC04 — Saturação Positiva e Negativa (Overflow → Clamp):** *Justificativa:* Avalia a resposta ao pior risco apontado no projeto. No TC03 (estouro positivo), o resultado natural causaria *wrap-around* negativo; a MAC deve detectar, levantar a *flag* de erro por um ciclo, e travar a saída em 0x7FFF. O TC04 testa a mesma premissa para o limite inferior (0x8000). Se falhassem, a rede ELM poderia inverter completamente a polaridade de um neurônio fortemente ativado.  
-* **TC05 — Sequência Síncrona (Acumula → Limpa → Acumula):** *Justificativa:* Valida a lógica do sinal mac\_clr. Prova que o clear é de fato **síncrono** (respeitando a borda do clock) e que limpa totalmente os contadores internos para que a próxima operação comece estritamente do zero, simulando a transição de cálculo de um neurônio para o outro.  
-* **TC06 — Regra de Sinais (Dois Negativos \= Resultado Positivo):** *Justificativa:* Garante que o bloco Verilog está inferindo corretamente o multiplicador como signed (Complemento de 2). Multiplicadores unsigned tratariam números negativos como valores inteiros absurdamente altos, arruinando a inferência.  
-* **TC07 — Precedência do Reset Global (rst\_n):** *Justificativa:* Confirma que o *reset* assíncrono do sistema, caso ativado no meio de uma imagem, tem prioridade sobre todas as outras lógicas e derruba o valor do acumulador de imediato.  
-* **TC08 — Retenção de Estado (mac\_en \= 0):** *Justificativa:* Testa a integridade do "laço de realimentação" dos multiplexadores. Quando a FSM pausa a inferência, a MAC não pode perder os dados acumulados mesmo que os fios de entrada a e b continuem oscilando.  
-* **TC09 — Acumulação Contínua Sem Overflow:** *Justificativa:* Simula um cenário real da ELM. Na prática, a MAC vai somar 784 vezes para processar a imagem. Este teste executa 4 somas consecutivas normais para comprovar que o acc\_internal consegue somar sequencialmente sem perdas e sem acionar as lógicas de saturação indevidamente.  
-* **TC10 — Transparência da Saída no Clear:** *Justificativa:* Comprova que não há "registradores fantasmas" atrasando a saída. Quando o mac\_clr bate junto com o clock, o acc\_out (a vitrine do módulo) vai imediatamente para 16'h0000.
+* **TC-MAC-02 — mac\_clr tem prioridade sobre mac\_en:** *Justificativa:* Quando ambos os sinais são assertados simultaneamente, `mac_clr` deve vencer. Garante que a FSM pode zerar o acumulador de forma segura mesmo que `mac_en` esteja ativo por overlap de controle.
+
+* **TC-MAC-03 — mac\_en=0 mantém o acumulador estável:** *Justificativa:* Verifica por 5 ciclos consecutivos que o acumulador retém seu valor quando a habilitação está desativada, mesmo com `a` e `b` oscilando em valores altos. Protege contra latch inference indevida.
+
+* **TC-MAC-04 — +1.0 × +1.0 = +1.0:** *Justificativa:* Multiplicação de referência. Valida truncamento `[27:12]` e ausência de overflow para operandos nominais idênticos ao valor unitário Q4.12 (`0x1000`).
+
+* **TC-MAC-05 — +0.5 × +0.5 = +0.25:** *Justificativa:* Verifica precisão fracionária do truncamento. O produto exato é `0x0400_0000` em Q8.24; `[27:12]` deve extrair `0x0400` (+0.25 em Q4.12).
+
+* **TC-MAC-06 — +1.0 × −1.0 = −1.0:** *Justificativa:* Valida que o multiplicador opera em complemento de 2 com sinal. Um multiplicador inferido como `unsigned` produziria resultado completamente errado neste caso.
+
+* **TC-MAC-07 — −1.0 × −1.0 = +1.0:** *Justificativa:* Regra de sinais: dois negativos devem produzir positivo. Complementar ao TC-MAC-06 — juntos provam o comportamento `signed` em ambas as polaridades.
+
+* **TC-MAC-08 — Acumulação de 4 parcelas = +1.25:** *Justificativa:* Simula o padrão real da ELM (784 acumulações por neurônio). Verifica que `acc_internal` acumula corretamente sem perdas nem acionamento indevido da saturação em sequências normais.
+
+* **TC-MAC-09 — Cancelamento: +1.0 + (−1.0) = 0:** *Justificativa:* Valida que a acumulação de valores opostos resulta em zero, confirmando o comportamento correto do somador com operandos negativos sign-extendidos.
+
+* **TC-MAC-10 — Saturação positiva em +7.999 (0x7FFF):** *Justificativa:* 8 acumulações de +1.0 tentariam atingir +8.0, que excede o range Q4.12. O acumulador deve saturar em `0x7FFF` e permanecer travado. Sem `is_saturated`, o wrap-around produziria um valor negativo, invertendo a polaridade do neurônio.
+
+* **TC-MAC-11 — Saturação negativa em −8.0 (0x8000):** *Justificativa:* Espelho negativo do TC-MAC-10. 8 acumulações de −1.0 devem saturar em `0x8000` e permanecer travadas.
+
+* **TC-MAC-12 — Saturação permanente até mac\_clr (duas partes):** *Justificativa:* Valida diretamente o mecanismo `is_saturated`. Após saturação positiva, uma acumulação de −0.25 não deve reduzir o valor (`12a`). Só após `mac_clr=1` o acumulador deve zerar (`12b`). Garante que a saturação é um estado terminal, não um evento pontual.
+
+* **TC-MAC-13 — Truncamento abaixo da resolução (1 LSB):** *Justificativa:* `a = b = 0x0001` (+1/4096 cada). O produto bruto é 1 em Q8.24 — abaixo de `product[12]` — então `[27:12]` extrai zero. Verifica que o truncamento não gera ruído em produtos abaixo da resolução Q4.12.
+
+* **TC-MAC-14 — mac\_clr seguido de nova acumulação imediata:** *Justificativa:* Confirma que após `mac_clr=1`, o acumulador pode receber nova acumulação já no ciclo seguinte sem delay. Simula a transição real entre neurônios na FSM, onde CALC\_HIDDEN usa `mac_clr` e retoma `mac_en` imediatamente.
 
 ## **4\. Conclusão da Fase**
 
-Os 10 casos de teste resultaram em PASS durante a simulação RTL. A unidade demonstrou precisão matemática no truncamento e robustez no tratamento de *overflows* com limites rígidos (clamp), estando apta para a integração no datapath superior e interconexão com as memórias ROM da rede neural.
+Os 14 casos de teste resultaram em PASS durante a simulação RTL. A unidade demonstrou precisão matemática no truncamento Q4.12, robustez no tratamento de overflows com saturação permanente via `is_saturated`, e comportamento correto de todos os sinais de controle, estando apta para a integração no datapath superior e interconexão com as memórias ROM da rede neural.
