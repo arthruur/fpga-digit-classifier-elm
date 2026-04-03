@@ -2,9 +2,17 @@
 // elm_accel.v — Top-level do co-processador ELM
 // TEC 499 · MI Sistemas Digitais · UEFS 2026.1 · Marco 1 / Fase 5
 //
+// Histórico de alterações:
+//   v1 — ROM inicializadas via $readmemh (pesos no bitstream).
+//   v2 — rom_pesos e rom_bias convertidas para RAM; STORE_WEIGHTS (0x14)
+//        e STORE_BIAS (0x18) adicionados ao reg_bank.
+//   v3 — rom_beta convertida para RAM; STORE_BETA (0x1C) adicionado.
+//        ISA completa: STORE_IMG, STORE_WEIGHTS, STORE_BIAS, STORE_BETA,
+//        START, STATUS. Modelo ELM totalmente configurável em runtime.
+//
 // Instancia e interconecta todos os submódulos:
 //   reg_bank, fsm_ctrl, mac_unit, pwl_activation, argmax_block,
-//   ram_img, rom_pesos, rom_bias, rom_beta, ram_hidden
+//   ram_img, ram_pesos, ram_beta, ram_bias, ram_hidden
 //
 // Fluxo de dados — camada oculta (CALC_HIDDEN):
 //   mac_a = pixel_q412  (pixel << 4, range [0x0000, 0x0FF0])
@@ -28,18 +36,19 @@
 //   max_idx → result_out → registrador RESULT
 //
 // Interface MMIO (via reg_bank):
-//   0x00 CTRL   W  bit[0]=start, bit[1]=reset
-//   0x04 STATUS R  bits[1:0]=estado, bits[5:2]=pred
-//   0x08 IMG    W  bits[9:0]=pixel_addr, bits[17:10]=pixel_data
-//   0x0C RESULT R  bits[3:0]=pred (0..9)
-//   0x10 CYCLES R  ciclos de clock desde START até DONE
+//   0x00 CTRL         W  bit[0]=start, bit[1]=reset
+//   0x04 STATUS       R  bits[1:0]=estado, bits[5:2]=pred
+//   0x08 IMG          W  bits[9:0]=pixel_addr, bits[17:10]=pixel_data
+//   0x0C RESULT       R  bits[3:0]=pred (0..9)
+//   0x10 CYCLES       R  ciclos de clock desde START até DONE
+//   0x14 WEIGHTS_DATA W  bits[15:0]=peso Q4.12  (ponteiro auto-incremental)
+//   0x18 BIAS_DATA    W  bits[15:0]=bias Q4.12  (ponteiro auto-incremental)
+//   0x1C BETA_DATA    W  bits[15:0]=peso β Q4.12 (ponteiro auto-incremental)
 // =============================================================================
 
 module elm_accel #(
-    // Passados para ram_img e fsm_ctrl no modo demo standalone.
-    // Defaults = 0/"" preservam o comportamento original (escrita via MMIO).
-    parameter INIT_FILE     = "",   // arquivo HEX de pixels pré-carregados
-    parameter PRELOADED_IMG = 0     // 1 = pula LOAD_IMG
+    parameter INIT_FILE     = "",
+    parameter PRELOADED_IMG = 0
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -54,93 +63,78 @@ module elm_accel #(
 // Seção 1 — Sinais internos: reg_bank
 // ============================================================================
 
-wire        start_pulse;        // pulso de 1 ciclo: inicia inferência
-wire        reset_cmd;          // nível: aborta FSM
-wire  [9:0] pixel_addr;         // endereço do pixel escrito pelo ARM
-wire  [7:0] pixel_data;         // valor do pixel (0..255)
-wire        we_img_rb;          // write enable da ram_img (vindo do ARM)
+wire        start_pulse;
+wire        reset_cmd;
+wire  [9:0] pixel_addr;
+wire  [7:0] pixel_data;
+wire        we_img_rb;
 
-// Sinais de status lidos pela FSM e repassados ao reg_bank
-wire  [1:0] status_wire;
-wire  [3:0] result_wire;
-wire [31:0] cycles_wire;
+// STORE_WEIGHTS
+wire        we_pesos_rb;
+wire [16:0] waddr_pesos_rb;
+wire [15:0] wdata_pesos_rb;
+
+// STORE_BIAS
+wire        we_bias_rb;
+wire  [6:0] waddr_bias_rb;
+wire [15:0] wdata_bias_rb;
+
+// STORE_BETA
+wire        we_beta_rb;
+wire [10:0] waddr_beta_rb;
+wire [15:0] wdata_beta_rb;
 
 // ============================================================================
 // Seção 2 — Sinais internos: fsm_ctrl
 // ============================================================================
 
-wire        we_img_fsm;         // (gerado pela FSM, não usado no we — ver Seção 5)
-wire  [9:0] addr_img;           // endereço de leitura da ram_img (CALC_HIDDEN)
-wire        we_hidden;          // write enable da ram_hidden
-wire  [6:0] addr_hidden;        // endereço da ram_hidden
-wire [16:0] addr_w;             // endereço da rom_pesos
-wire  [6:0] addr_bias;          // endereço da rom_bias
-wire [10:0] addr_beta;          // endereço da rom_beta (layout: i*10 + k)
-wire        mac_en;             // habilita acumulação
-wire        mac_clr;            // limpa acumulador
-wire        bias_cycle;         // 1 no ciclo do bias (mac_a←bias, mac_b←1.0)
-wire        h_capture;          // coincide com we_hidden — marcado para clareza
-wire        argmax_en;          // habilita comparação no argmax_block
+wire        we_img_fsm;
+wire  [9:0] addr_img;
+wire        we_hidden;
+wire  [6:0] addr_hidden;
+wire [16:0] addr_w;
+wire  [6:0] addr_bias;
+wire [10:0] addr_beta;
+wire        mac_en;
+wire        mac_clr;
+wire        bias_cycle;
+wire        h_capture;
+wire        argmax_en;
 wire  [1:0] status_out_fsm;
 wire  [3:0] result_out_fsm;
 wire [31:0] cycles_out_fsm;
 wire        done_out_fsm;
-wire        calc_output_active; // 1 durante CALC_OUTPUT
-wire  [3:0] k_out;              // índice de classe atual (0..9)
+wire        calc_output_active;
+wire  [3:0] k_out;
 
 // ============================================================================
 // Seção 3 — Sinais internos: memórias
 // ============================================================================
 
-wire  [7:0] img_data;           // pixel lido de ram_img
-wire [15:0] weight_data;        // peso W_in[i][j] lido de rom_pesos
-wire [15:0] bias_data;          // bias b[i] lido de rom_bias
-wire [15:0] beta_data;          // peso β[i][k] lido de rom_beta
-wire [15:0] h_rdata;            // ativação h[i] lida de ram_hidden
+wire  [7:0] img_data;
+wire [15:0] weight_data;
+wire [15:0] bias_data;
+wire [15:0] beta_data;
+wire [15:0] h_rdata;
 
 // ============================================================================
 // Seção 4 — Sinais internos: datapath
 // ============================================================================
 
-wire [15:0] acc_out;            // saída Q4.12 do acumulador MAC
-wire        overflow;           // flag de saturação da MAC
-wire [15:0] pwl_out;            // saída Q4.12 da PWL combinacional
-wire  [3:0] max_idx;            // índice do maior score (argmax_block)
-wire        argmax_done;        // pulso: todos os 10 scores comparados
+wire [15:0] acc_out;
+wire        overflow;
+wire [15:0] pwl_out;
+wire  [3:0] max_idx;
+wire        argmax_done;
 
 // ============================================================================
 // Seção 5 — Conversão pixel → Q4.12
-//
-// pixel/255 ≈ pixel/256 = pixel << 4
-//   pixel=0   → 0x0000 (0.000 em Q4.12)
-//   pixel=128 → 0x0800 (0.500 em Q4.12)
-//   pixel=255 → 0x0FF0 (0.996 em Q4.12)
-//
-// O erro de 0.004 em relação a /255 é irrelevante: com z já saturando
-// na maioria dos neurônios, o argmax final é insensível a esse desvio.
 // ============================================================================
 
 wire [15:0] pixel_q412 = {4'b0000, img_data, 4'b0000};
 
 // ============================================================================
 // Seção 6 — Mux de entradas da MAC
-//
-// Prioridade (bias_cycle tem prioridade sobre calc_output_active):
-//
-//   bias_cycle=1:
-//     mac_a ← bias_data     (b[i] em Q4.12)
-//     mac_b ← 16'h1000      (+1.0 em Q4.12)
-//     Efeito: acc += b[i] × 1.0  →  argumento completo da PWL
-//
-//   calc_output_active=1, bias_cycle=0:
-//     mac_a ← h_rdata       (h[i] de ram_hidden)
-//     mac_b ← beta_data     (β[i][k] de rom_beta)
-//     Efeito: acc += β[i][k] × h[i]
-//
-//   default (CALC_HIDDEN, ciclo normal):
-//     mac_a ← pixel_q412    (x[j] convertido)
-//     mac_b ← weight_data   (W_in[i][j] de rom_pesos)
-//     Efeito: acc += W_in[i][j] × x[j]
 // ============================================================================
 
 wire [15:0] mac_a_in = bias_cycle         ? bias_data   :
@@ -153,28 +147,12 @@ wire [15:0] mac_b_in = bias_cycle         ? 16'h1000    :
 
 // ============================================================================
 // Seção 7 — Endereço da ram_img (mux escrita/leitura)
-//
-// A ram_img é single-port: escrita e leitura usam o mesmo barramento.
-//   Escrita (we_img_rb=1): ARM controla o endereço via pixel_addr
-//   Leitura (we_img_rb=0): FSM controla o endereço via addr_img
-//
-// Como as duas fases não se sobrepõem no tempo (ARM escreve antes do
-// START, FSM lê durante CALC_HIDDEN), o mux simples funciona corretamente.
 // ============================================================================
 
 wire [9:0] ram_img_addr = we_img_rb ? pixel_addr : addr_img;
 
 // ============================================================================
 // Seção 8 — Buffer de scores y[0..9]
-//
-// Captura acc_out ao final de cada classe durante CALC_OUTPUT.
-// Condição: mac_clr=1 AND we_hidden=0
-//   - mac_clr=1 sempre marca o fim de um cálculo (hidden ou output)
-//   - we_hidden=0 distingue CALC_OUTPUT de CALC_HIDDEN
-//     (em CALC_HIDDEN, we_hidden=1 junto com mac_clr=1)
-//
-// Timing: ao posedge onde mac_clr=1, acc_out ainda reflete y[k]
-// (o clear só efetiva APÓS este posedge no mac_unit). ✓
 // ============================================================================
 
 reg signed [15:0] y_buf [0:9];
@@ -192,21 +170,6 @@ end
 
 // ============================================================================
 // Seção 9 — Controle do argmax_block
-//
-// argmax_start_pulse: detecta a borda de subida de argmax_en
-//   → usado para resetar argmax_block e reiniciar o contador argmax_k
-//
-// argmax_enable: habilita comparação apenas APÓS o ciclo de start
-//   → garante que o start reseta o bloco ANTES da primeira comparação
-//
-// argmax_k: conta 0..9 durante as 10 comparações
-//   → endereça y_buf para apresentar um score por ciclo
-//
-// Diagrama de tempo (10 ciclos a partir da entrada em ARGMAX):
-//   Ciclo 1: start=1, enable=0. Bloco reseta. argmax_k=0.
-//   Ciclo 2: start=0, enable=1. y_buf[0] → bloco. argmax_k→1.
-//   ...
-//   Ciclo 11: enable=1. y_buf[9] → bloco. done pulsa.
 // ============================================================================
 
 reg argmax_en_prev;
@@ -215,8 +178,8 @@ always @(posedge clk or negedge rst_n) begin
     else        argmax_en_prev <= argmax_en;
 end
 
-wire argmax_start_pulse  = argmax_en && !argmax_en_prev;
-wire argmax_enable       = argmax_en && !argmax_start_pulse;
+wire argmax_start_pulse = argmax_en && !argmax_en_prev;
+wire argmax_enable      = argmax_en && !argmax_start_pulse;
 
 reg [3:0] argmax_k;
 always @(posedge clk or negedge rst_n) begin
@@ -234,21 +197,30 @@ end
 
 // ---------- reg_bank ---------------------------------------------------------
 reg_bank u_reg_bank (
-    .clk        (clk),
-    .rst_n      (rst_n),
-    .addr       (addr),
-    .write_en   (write_en),
-    .read_en    (read_en),
-    .data_in    (data_in),
-    .status_in  (status_out_fsm),
-    .pred_in    (result_out_fsm),
-    .cycles_in  (cycles_out_fsm),
-    .data_out   (data_out),
-    .start_out  (start_pulse),
-    .reset_out  (reset_cmd),
-    .pixel_addr (pixel_addr),
-    .pixel_data (pixel_data),
-    .we_img_out (we_img_rb)
+    .clk          (clk),
+    .rst_n        (rst_n),
+    .addr         (addr),
+    .write_en     (write_en),
+    .read_en      (read_en),
+    .data_in      (data_in),
+    .status_in    (status_out_fsm),
+    .pred_in      (result_out_fsm),
+    .cycles_in    (cycles_out_fsm),
+    .data_out     (data_out),
+    .start_out    (start_pulse),
+    .reset_out    (reset_cmd),
+    .pixel_addr   (pixel_addr),
+    .pixel_data   (pixel_data),
+    .we_img_out   (we_img_rb),
+    .we_pesos_out (we_pesos_rb),
+    .waddr_pesos  (waddr_pesos_rb),
+    .wdata_pesos  (wdata_pesos_rb),
+    .we_bias_out  (we_bias_rb),
+    .waddr_bias   (waddr_bias_rb),
+    .wdata_bias   (wdata_bias_rb),
+    .we_beta_out  (we_beta_rb),
+    .waddr_beta   (waddr_beta_rb),
+    .wdata_beta   (wdata_beta_rb)
 );
 
 // ---------- fsm_ctrl ---------------------------------------------------------
@@ -297,25 +269,45 @@ ram_img #(
     .data_out (img_data)
 );
 
-// ---------- rom_pesos --------------------------------------------------------
-rom_pesos u_rom_pesos (
+// ---------- ram_pesos --------------------------------------------------------
+// Porta de leitura controlada pela FSM (addr_w).
+// Porta de escrita controlada pelo reg_bank (STORE_WEIGHTS — 0x14).
+// Separação temporal garantida: ARM escreve antes de START.
+ram_pesos u_ram_pesos (
     .clk      (clk),
-    .addr     (addr_w),
-    .data_out (weight_data)
+    .addr_r   (addr_w),
+    .data_out (weight_data),
+    .we_w     (we_pesos_rb),
+    .addr_w   (waddr_pesos_rb),
+    .data_w   (wdata_pesos_rb)
 );
 
-// ---------- rom_bias ---------------------------------------------------------
-rom_bias u_rom_bias (
+// ---------- ram_bias ---------------------------------------------------------
+// Porta de leitura controlada pela FSM (addr_bias).
+// Porta de escrita controlada pelo reg_bank (STORE_BIAS — 0x18).
+// Nota: b_q.txt é idêntico entre variantes de modelo; re-envio não necessário.
+ram_bias u_ram_bias (
     .clk      (clk),
-    .addr     (addr_bias),
-    .data_out (bias_data)
+    .addr_r   (addr_bias),
+    .data_out (bias_data),
+    .we_w     (we_bias_rb),
+    .addr_w   (waddr_bias_rb),
+    .data_w   (wdata_bias_rb)
 );
 
-// ---------- rom_beta ---------------------------------------------------------
-rom_beta u_rom_beta (
+// ---------- ram_beta ---------------------------------------------------------
+// Antes: rom_beta (ROM no bitstream).
+// Agora: ram_beta — STORE_BETA (0x1C) permite trocar o modelo em runtime.
+// β é o único parâmetro que varia entre variantes ELM treinadas.
+// Porta de leitura controlada pela FSM (addr_beta).
+// Porta de escrita controlada pelo reg_bank (STORE_BETA — 0x1C).
+ram_beta u_ram_beta (
     .clk      (clk),
-    .addr     (addr_beta),
-    .data_out (beta_data)
+    .addr_r   (addr_beta),
+    .data_out (beta_data),
+    .we_w     (we_beta_rb),
+    .addr_w   (waddr_beta_rb),
+    .data_w   (wdata_beta_rb)
 );
 
 // ---------- ram_hidden -------------------------------------------------------
@@ -340,7 +332,6 @@ mac_unit u_mac (
 );
 
 // ---------- pwl_activation ---------------------------------------------------
-// Combinacional pura: saída disponível no mesmo ciclo que acc_out
 pwl_activation u_pwl (
     .x_in  (acc_out),
     .y_out (pwl_out)
@@ -355,7 +346,7 @@ argmax_block u_argmax (
     .y_in    (y_buf[argmax_k]),
     .k_in    (argmax_k),
     .max_idx (max_idx),
-    .max_val (),            // não usado no top-level
+    .max_val (),
     .done    (argmax_done)
 );
 

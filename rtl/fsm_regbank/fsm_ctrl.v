@@ -265,7 +265,7 @@ module fsm_ctrl #(
 
             ARGMAX:      next_state = argmax_done ? DONE : ARGMAX;
 
-            DONE:        next_state = IDLE;
+            DONE:        next_state = reset ? IDLE : DONE;
 
             ERROR:       next_state = reset ? IDLE : ERROR;
 

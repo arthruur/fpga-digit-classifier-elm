@@ -9,7 +9,7 @@ MNIST. O co-processador é descrito em Verilog RTL e sintetizado para a platafor
 
 **Repositório:** https://github.com/arthruur/fpga-digit-classifier-elm
 
-**Equipe:** Arthur Teles de Oliveira Freitas · Davi Zardo Motté · Gustavo
+**Equipe:** Arthur Teles de Oliveira Freitas · Davi Zardo Motté · Gustavo Silva Ribeiro 
 
 ---
 
