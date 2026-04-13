@@ -1,77 +1,185 @@
-#!/usr/bin/env python3
 """
 png_to_mif.py
-Converte uma imagem .png para o formato .mif compatível com MNIST (28x28, grayscale).
+-------------
+Converte imagens .png de dígitos para o formato .mif (Memory Initialization File).
+
+Estrutura esperada de pastas:
+    pasta_raiz/
+        0/
+            img_001.png
+            img_002.png
+        1/
+            img_001.png
+        ...
+        9/
+            ...
 
 Uso:
-    python png_to_mif.py <input.png> [output.mif]
+    python png_to_mif.py --input <pasta_raiz> --output <pasta_saida>
 
-Se o nome de saída não for fornecido, usa o mesmo nome da entrada com extensão .mif.
+Requisitos:
+    pip install Pillow
 """
 
+import argparse
 import sys
 from pathlib import Path
 
 try:
     from PIL import Image
 except ImportError:
-    print("Pillow não encontrado. Instale com: pip install Pillow")
+    print("[ERRO] Biblioteca 'Pillow' não encontrada.")
+    print("       Instale com: pip install Pillow")
     sys.exit(1)
 
+# Constantes do formato MIF (padrão MNIST 28x28 grayscale)
+EXPECTED_WIDTH  = 28
+EXPECTED_HEIGHT = 28
+DEPTH           = EXPECTED_WIDTH * EXPECTED_HEIGHT  # 784
+BIT_WIDTH       = 8
 
-def png_to_mif(input_path: str, output_path: str = None):
-    input_path = Path(input_path)
 
-    if not input_path.exists():
-        print(f"Erro: arquivo '{input_path}' não encontrado.")
+def pixel_to_hex(value: int) -> str:
+    """Converte valor de pixel (0-255) para string hex de 2 dígitos maiúsculos."""
+    return f"{value:02X}"
+
+
+def generate_mif(pixels: list[int]) -> str:
+    """Gera o conteúdo completo de um arquivo .mif a partir de uma lista de 784 pixels."""
+    lines = [
+        f"DEPTH = {DEPTH};",
+        f"WIDTH = {BIT_WIDTH};",
+        "ADDRESS_RADIX = DEC;",
+        "DATA_RADIX = HEX;",
+        "CONTENT BEGIN",
+    ]
+
+    for addr, value in enumerate(pixels):
+        lines.append(f"\t{addr} : {pixel_to_hex(value)};")
+
+    lines.append("END;")
+    return "\n".join(lines) + "\n"
+
+
+def validate_and_load_image(png_path: Path) -> list[int] | None:
+    """
+    Carrega e valida uma imagem PNG.
+    Retorna lista de pixels ou None se a imagem for inválida (com log do motivo).
+    """
+    try:
+        img = Image.open(png_path)
+    except Exception as e:
+        print(f"  [PULADO] {png_path.name} — não foi possível abrir: {e}")
+        return None
+
+    # Validação de modo de cor
+    if img.mode != "L":
+        print(f"  [PULADO] {png_path.name} — modo de cor '{img.mode}' (esperado: grayscale 'L')")
+        return None
+
+    # Validação de dimensões
+    if img.size != (EXPECTED_WIDTH, EXPECTED_HEIGHT):
+        print(f"  [PULADO] {png_path.name} — dimensões {img.size} (esperado: {EXPECTED_WIDTH}x{EXPECTED_HEIGHT})")
+        return None
+
+    return list(img.getdata())
+
+
+def convert_digit_folder(digit_folder: Path, output_folder: Path, digit: str) -> tuple[int, int]:
+    """
+    Converte todos os PNGs de uma pasta de dígito para .mif.
+    Retorna (convertidos, pulados).
+    """
+    png_files = sorted(digit_folder.glob("*.png"))
+
+    if not png_files:
+        print(f"\n[AVISO] Pasta '{digit_folder.name}' não contém arquivos .png. Pulando.")
+        return 0, 0
+
+    digit_output = output_folder / f"digito_{digit}"
+    digit_output.mkdir(parents=True, exist_ok=True)
+
+    converted = 0
+    skipped   = 0
+
+    print(f"\n[Dígito {digit}] {len(png_files)} arquivo(s) encontrado(s) em '{digit_folder}'")
+
+    for png_path in png_files:
+        pixels = validate_and_load_image(png_path)
+
+        if pixels is None:
+            skipped += 1
+            continue
+
+        mif_filename = f"digito{digit}_{png_path.stem}.mif"
+        mif_path     = digit_output / mif_filename
+
+        mif_content = generate_mif(pixels)
+        mif_path.write_text(mif_content, encoding="utf-8")
+
+        print(f"  [OK] {png_path.name} → {mif_path.relative_to(output_folder.parent)}")
+        converted += 1
+
+    return converted, skipped
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Converte imagens .png de dígitos para o formato .mif"
+    )
+    parser.add_argument(
+        "--input", "-i",
+        required=True,
+        help="Pasta raiz contendo subpastas nomeadas por dígito (0-9)"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default="mif_output",
+        help="Pasta de saída para os arquivos .mif (padrão: ./mif_output)"
+    )
+    args = parser.parse_args()
+
+    input_root  = Path(args.input)
+    output_root = Path(args.output)
+
+    # Valida pasta de entrada
+    if not input_root.is_dir():
+        print(f"[ERRO] Pasta de entrada não encontrada: '{input_root}'")
         sys.exit(1)
 
-    if not input_path.suffix.lower() == ".png":
-        print(f"Aviso: o arquivo '{input_path}' não tem extensão .png, mas tentando mesmo assim.")
+    # Busca subpastas nomeadas de 0 a 9
+    digit_folders = sorted(
+        [d for d in input_root.iterdir() if d.is_dir() and d.name.isdigit()],
+        key=lambda d: int(d.name)
+    )
 
-    # Define o nome de saída
-    if output_path is None:
-        output_path = input_path.with_suffix(".mif")
-    else:
-        output_path = Path(output_path)
+    if not digit_folders:
+        print(f"[ERRO] Nenhuma subpasta de dígito (0-9) encontrada em '{input_root}'")
+        sys.exit(1)
 
-    # Abre e processa a imagem
-    img = Image.open(input_path)
+    output_root.mkdir(parents=True, exist_ok=True)
 
-    # Converte para escala de cinza (L = luminance, 8 bits)
-    img = img.convert("L")
+    print("=" * 55)
+    print("         Conversão PNG → MIF")
+    print("=" * 55)
+    print(f"Entrada : {input_root.resolve()}")
+    print(f"Saída   : {output_root.resolve()}")
+    print(f"Dígitos encontrados: {[d.name for d in digit_folders]}")
 
-    # Redimensiona para 28x28 (padrão MNIST) usando LANCZOS para melhor qualidade
-    img = img.resize((28, 28), Image.LANCZOS)
+    total_converted = 0
+    total_skipped   = 0
 
-    # Obtém os pixels como lista plana (row-major, esquerda→direita, cima→baixo)
-    pixels = list(img.getdata())  # 784 valores de 0-255
+    for digit_folder in digit_folders:
+        converted, skipped = convert_digit_folder(
+            digit_folder, output_root, digit_folder.name
+        )
+        total_converted += converted
+        total_skipped   += skipped
 
-    depth = len(pixels)   # 784
-    width = 8             # bits por pixel
-
-    # Escreve o arquivo .mif
-    with open(output_path, "w") as f:
-        f.write(f"DEPTH = {depth};\n")
-        f.write(f"WIDTH = {width};\n")
-        f.write("ADDRESS_RADIX = DEC;\n")
-        f.write("DATA_RADIX = HEX;\n")
-        f.write("CONTENT BEGIN\n")
-
-        for addr, value in enumerate(pixels):
-            f.write(f"\t{addr} : {value:02X};\n")
-
-        f.write("END;\n")
-
-    print(f"Concluído! '{input_path}' → '{output_path}' ({depth} pixels)")
+    print("\n" + "=" * 55)
+    print(f"  Concluído: {total_converted} convertido(s), {total_skipped} pulado(s)")
+    print("=" * 55)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Uso: python png_to_mif.py <input.png> [output.mif]")
-        sys.exit(1)
-
-    inp = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) >= 3 else None
-
-    png_to_mif(inp, out)
+    main()
